@@ -11,7 +11,7 @@
 #include "imgui_impl_win32.h"
 #include <d3d9.h>
 #include <tchar.h>
-
+#include "implot.h"
 // Data
 static LPDIRECT3D9              g_pD3D = nullptr;
 static LPDIRECT3DDEVICE9        g_pd3dDevice = nullptr;
@@ -52,6 +52,7 @@ int main(int, char**)
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImPlot::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
@@ -87,6 +88,7 @@ int main(int, char**)
 
     // Our state
     bool show_demo_window = true;
+    bool show_demo_plot = true;
     bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
@@ -138,6 +140,9 @@ int main(int, char**)
         // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
         if (show_demo_window)
             ImGui::ShowDemoWindow(&show_demo_window);
+
+        if (show_demo_plot)
+            ImPlot::ShowDemoWindow(&show_demo_plot);
 
         // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
         {
@@ -194,6 +199,7 @@ int main(int, char**)
     ImGui_ImplDX9_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
+    ImPlot::DestroyContext();
 
     CleanupDeviceD3D();
     ::DestroyWindow(hwnd);
