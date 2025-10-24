@@ -18,6 +18,11 @@
 #include <SDL3/SDL_opengl.h>
 #endif
 
+#include <mutex>
+#include <memory>
+#include <iostream>
+#include <string>
+
 #ifdef __EMSCRIPTEN__
 #include "../libs/emscripten/emscripten_mainloop_stub.h"
 #endif
@@ -38,7 +43,15 @@ public:
             glDeleteTextures(1, &textureID);
         }
     }
-
+    void clear() {
+        static SDL_Surface* sur = nullptr;
+        if (!sur) {
+            sur = SDL_CreateSurface(1, 1, SDL_PIXELFORMAT_RGB24);
+            memset(sur->pixels, 0, 3);
+        }
+        LoadFromSurface(sur);
+        //SDL_DestroySurface(sur);
+    }
     bool LoadFromSurface(SDL_Surface* surface) {
         if (!surface) return false;
 
@@ -101,6 +114,181 @@ public:
     GLuint GetTextureID() const { return textureID; }
     int GetWidth() const { return width; }
     int GetHeight() const { return height; }
+};
+
+struct CameraClose {
+    void operator()(SDL_Camera* t) const {
+        SDL_CloseCamera(t);
+    }
+};
+
+struct AudioStreamClose {
+    void operator()(SDL_AudioStream* t) const {
+        SDL_DestroyAudioStream(t);
+    }
+};
+
+class PcmBuffer {
+    std::mutex lock_;
+    float* buff_;
+    int read_pos_ = 0;
+    int write_pos_ = 0;
+    int max_size_ = 8192;
+public:
+    PcmBuffer(int max_size) : max_size_(max_size) {
+        buff_ = new float[max_size];
+    }
+    ~PcmBuffer() {
+        delete[] buff_;
+    }
+    float* data() const {
+        return buff_ + read_pos_;
+    }
+    int size() const {
+        return write_pos_ - read_pos_;
+    }
+    void clear() {
+        write_pos_ = read_pos_ = 0;
+    }
+    int Read(float* buff, int size) {
+        std::unique_lock<decltype(lock_)> l(lock_);
+        int n = write_pos_ - read_pos_;
+        if (size > n) {
+            memcpy(buff, &buff_[read_pos_], n * 4);
+            memset(buff + n, 0, 4 * (size - n));
+            read_pos_ = write_pos_ = 0;
+            return n;
+        }
+        else {
+            memcpy(buff, &buff_[read_pos_], size * 4);
+            read_pos_ += size;
+            return size;
+        }
+    }
+    int Write(const float* buff, int size) {
+        std::unique_lock<decltype(lock_)> l(lock_);
+        if (max_size_ - write_pos_ < size) {
+            if (read_pos_) {
+                write_pos_ -= read_pos_;
+                memmove(buff_, buff_ + read_pos_, write_pos_ * 4);
+                read_pos_ = 0;
+            }
+            if (max_size_ - write_pos_ < size) {
+                // return -1;
+                int pos = write_pos_ - size;
+                memmove(buff_, buff_ + size, pos * 4);
+                memcpy(buff_ + pos, buff, size * 4);
+                return size;
+            }
+        }
+        memcpy(&buff_[write_pos_], buff, size * 4);
+        write_pos_ += size;
+        return size;
+    }
+};
+
+class SDLDevice {
+    std::unique_ptr<SDL_AudioStream, AudioStreamClose> mic_stream_, spk_stream_;
+    std::unique_ptr<SDL_Camera, CameraClose> camera_;
+    PcmBuffer pcm;
+public:
+    SDLDevice() : pcm(8192) {
+        SDL_Init(SDL_INIT_CAMERA | SDL_INIT_AUDIO);
+    }
+    virtual ~SDLDevice() {
+        StopAll();
+    }
+    void StopAll() {
+        StopPlayout();
+        StopRecord();
+        StopPreview();
+    }
+
+    float* pcm_data() const {
+        return pcm.data();
+    }
+    int pcm_size() const {
+        return pcm.size();
+    }
+    static void printSpec(const SDL_AudioSpec& spec, const char* msg) {
+        printf("%s %s %dx%d\n", msg, SDL_GetAudioFormatName(spec.format), spec.freq, spec.channels);
+    }
+
+    bool StartRecord(SDL_AudioDeviceID id, const SDL_AudioSpec& aspec) {
+        mic_stream_.reset(SDL_OpenAudioDeviceStream(id, &aspec, [](void* userdata, SDL_AudioStream* stream, int additional_amount, int total_amount) {
+            // printf("Microphone stream callback: %d, %d\n", additional_amount, total_amount);
+            auto pcm = (PcmBuffer*)userdata;
+            if (additional_amount > 0) {
+                char* buffer = new char[additional_amount];
+                int got = SDL_GetAudioStreamData(stream, buffer, additional_amount);
+                if (got > 0) {
+                    pcm->Write((float*)buffer, got / 4);
+                }
+                delete[] buffer;
+            }
+         }, &pcm));
+        if (!mic_stream_) return false;
+        SDL_AudioSpec ispec, ospec;
+        SDL_GetAudioStreamFormat(mic_stream_.get(), &ispec, &ospec);
+        printSpec(ispec, "record in  spec");
+        printSpec(ospec, "record out spec");
+        SDL_ResumeAudioStreamDevice(mic_stream_.get());
+        return true;
+    };
+    bool isRecord() const {
+        return mic_stream_ != nullptr;
+    }
+    void StopRecord() {
+        mic_stream_ = nullptr;
+        pcm.clear();
+    }
+    bool StartPlayout(SDL_AudioDeviceID id, const SDL_AudioSpec& aspec) {
+        printSpec(aspec, "playout spec");
+        spk_stream_.reset(SDL_OpenAudioDeviceStream(id, &aspec, [](void* userdata, SDL_AudioStream* stream, int additional_amount, int total_amount) {
+            auto pcm = (PcmBuffer*)userdata;
+            if (additional_amount > 0) {
+                //printf("Speaker stream callback: %d, %d\n", additional_amount, total_amount);
+                /* feed the new data to the stream. It will queue at the end, and trickle out as the hardware needs more data. */
+                char* buffer = new char[additional_amount];
+                pcm->Read((float*)buffer, additional_amount / 4);
+                SDL_PutAudioStreamData(stream, buffer, additional_amount);
+                delete[] buffer;
+            }
+        }, &pcm));
+        if (!spk_stream_) return false;
+        SDL_AudioSpec ispec, ospec;
+        SDL_GetAudioStreamFormat(spk_stream_.get(), &ispec, &ospec);
+        printSpec(ispec, "playout in  spec");
+        printSpec(ospec, "playout out spec");
+        SDL_ResumeAudioStreamDevice(spk_stream_.get());
+        return true;
+    };
+    bool isPlayout() const {
+        return spk_stream_ != nullptr;
+    }
+    void StopPlayout() {
+        spk_stream_ = nullptr;
+    }
+    bool StartPreview(SDL_CameraID id, const SDL_CameraSpec& spec) {
+        printf("open camera %d with fmt %s %dx%d@%d\n", id, SDL_GetPixelFormatName(spec.format), spec.width, spec.height, spec.framerate_numerator / spec.framerate_denominator);
+        camera_.reset(SDL_OpenCamera(id, &spec));
+        return camera_ != nullptr;
+    };
+    bool isPreview() const {
+        return camera_ != nullptr;
+    }
+    void StopPreview() {
+        camera_ = nullptr;
+    }
+    // SDL_Camera* camera() { return camera_.get(); }
+    std::shared_ptr<SDL_Surface> captureFrame(uint64_t* tsp) {
+        std::shared_ptr<SDL_Surface> ret;
+        if (auto camera = camera_.get()) {
+            ret.reset(SDL_AcquireCameraFrame(camera, tsp),
+                [camera](SDL_Surface* frame) {SDL_ReleaseCameraFrame(camera, frame); });
+        }
+        return std::move(ret);
+    }
 };
 
 // Main code
@@ -205,16 +393,17 @@ int main(int, char**)
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf");
     //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf");
     //IM_ASSERT(font != nullptr);
+#ifdef _WIN32
     ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\msyh.ttc");
     IM_ASSERT(font != nullptr);
-
+#endif
     // Our state
     bool show_demo_window = true;
     bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     SDLSurfaceTexture preview_texture;
-    SDL_Camera* camera = nullptr;
+
     int fmt_idx = 0, camera_fmt_count = 0;
     SDL_CameraSpec** camera_fmts = nullptr;
     int camera_idx = 0, camera_count = 0;
@@ -224,13 +413,17 @@ int main(int, char**)
     }
     // SDL_free(camera_ids);
 
-    SDL_AudioStream* mic = nullptr;
     int mic_idx = 0, mic_count = 0;
     SDL_AudioDeviceID* mic_ids = SDL_GetAudioRecordingDevices(&mic_count);
 
-    SDL_AudioStream* spk = nullptr;
     int spk_idx = 0, spk_count = 0;
     SDL_AudioDeviceID* spk_ids = SDL_GetAudioPlaybackDevices(&spk_count);
+
+    SDLDevice device;
+    SDL_AudioSpec aspec;
+    aspec.format = SDL_AUDIO_F32;
+    aspec.channels = 2;
+    aspec.freq = 16000;
 
     // Main loop
     bool done = false;
@@ -296,46 +489,98 @@ int main(int, char**)
 
             ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
 
-            if (mic_ids && ImGui::Combo("Microphone", &mic_idx, [](void* data, int idx) {
-                auto ids = (SDL_AudioDeviceID*)data;
-                return SDL_GetAudioDeviceName(ids[idx]);
-                }, mic_ids, mic_count)) {
-            }
-            if (spk_ids && ImGui::Combo("Speaker", &spk_idx, [](void* data, int idx) {
-                auto ids = (SDL_AudioDeviceID*)data;
-                return SDL_GetAudioDeviceName(ids[idx]);
-                }, spk_ids, spk_count)) {
-            }
-            if (camera_ids && ImGui::Combo("Camera", &camera_idx, [](void* data, int idx) {
-                auto ids = (SDL_CameraID*)data;
-                return SDL_GetCameraName(ids[idx]);
-                }, camera_ids, camera_count)) {
-                auto camera_id = camera_ids[camera_idx];
-                camera_fmts = SDL_GetCameraSupportedFormats(camera_id, &camera_fmt_count);
-            }
-            if (camera_fmts && ImGui::Combo("formats", &fmt_idx, [](void* data, int idx) {
-                auto ids = (SDL_CameraSpec**)data;
-                auto spec = ids[idx];
-                static char buff[64];
-                sprintf(buff, "%dx%d@%s", spec->width, spec->height, SDL_GetPixelFormatName(spec->format));
-                return (const char*)buff;
-                }, camera_fmts, camera_fmt_count)) {
-                if (camera) {
-                    SDL_CloseCamera(camera);
-                    camera = nullptr;
+            if (mic_ids) {
+                bool val = device.isRecord();
+                if(ImGui::Combo("##Microphone", &mic_idx, [](void* data, int idx) {
+                    auto ids = (SDL_AudioDeviceID*)data;
+                    return SDL_GetAudioDeviceName(ids[idx]);
+                }, mic_ids, mic_count) && val) {
+                    device.StartRecord(mic_ids[mic_idx], aspec);
                 }
-                camera = SDL_OpenCamera(camera_ids[camera_idx], camera_fmts[fmt_idx]);
-            }
-            if (camera) {
-                Uint64 tsp;
-                SDL_Surface* frame = SDL_AcquireCameraFrame(camera, &tsp);
-                if (frame) {
-                    preview_texture.LoadFromSurface(frame);
-                    SDL_ReleaseCameraFrame(camera, frame);
+                ImGui::SameLine();
+                if (ImGui::Button(val ? "Stop Record" : "Start Record")) {
+                    if (val) {
+                        device.StopRecord();
+                    }
+                    else{
+                        device.StartRecord(mic_ids[mic_idx], aspec);
+                    }
                 }
-                preview_texture.Draw();
+            }
+            if (spk_ids) {
+                bool val = device.isPlayout();
+                if(ImGui::Combo("##Speaker", &spk_idx, [](void* data, int idx) {
+                    auto ids = (SDL_AudioDeviceID*)data;
+                    return SDL_GetAudioDeviceName(ids[idx]);
+                }, spk_ids, spk_count) && val) {
+                    device.StartPlayout(spk_ids[spk_idx], aspec);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(val?"Stop Play":"Start Play")) {
+                    if (val) {
+                        device.StopPlayout();
+                    }
+                    else {
+                        device.StartPlayout(spk_ids[spk_idx], aspec);
+                    }
+                }
+            }
+            if (spk_ids || mic_ids) {
+                ImGui::PlotLines("##wav", device.pcm_data(), device.pcm_size(), 0, nullptr, -1.0f, 1.0f, ImVec2(0, 80));
+                ImGui::SameLine();
+                bool loop = device.isPlayout() && device.isRecord();
+                if (ImGui::Button(loop ? "Stop Loopback":"Start Lookback")) {
+                    if (loop) {
+                        device.StopPlayout();
+                        device.StopRecord();
+                    }
+                    else{
+                        device.StartPlayout(spk_ids[spk_idx], aspec);
+                        device.StartRecord(mic_ids[mic_idx], aspec);
+                    }
+                }
             }
 
+            if (camera_ids) {
+                if (ImGui::Combo("Camera", &camera_idx, [](void* data, int idx) {
+                    auto ids = (SDL_CameraID*)data;
+                    return SDL_GetCameraName(ids[idx]);
+                }, camera_ids, camera_count)) {
+                    auto camera_id = camera_ids[camera_idx];
+                    if (camera_fmts) { SDL_free(camera_fmts); }
+                    camera_fmts = SDL_GetCameraSupportedFormats(camera_id, &camera_fmt_count);
+                }
+
+                if (camera_fmts) {
+                    bool val = device.isPreview();
+                    if(ImGui::Combo("##formats", &fmt_idx, [](void* data, int idx) {
+                        auto ids = (SDL_CameraSpec**)data;
+                        auto spec = ids[idx];
+                        static char buff[64];
+                        sprintf(buff, "%dx%d@%s", spec->width, spec->height, SDL_GetPixelFormatName(spec->format));
+                        return (const char*)buff;
+                    }, camera_fmts, camera_fmt_count) && val){
+                        device.StopPreview();
+                        preview_texture.clear();
+                        device.StartPreview(camera_ids[camera_idx], *camera_fmts[fmt_idx]);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button(val?"Stop Preview":"Start Preview")) {
+                        if (val) {
+                            device.StopPreview();
+                            preview_texture.clear();
+                        } else {
+                            device.StartPreview(camera_ids[camera_idx], *camera_fmts[fmt_idx]);
+                        }
+                    }
+                }
+
+                Uint64 tsp;
+                if (auto frame = device.captureFrame(&tsp)) {
+                    preview_texture.LoadFromSurface(frame.get());
+                }
+                preview_texture.Draw(640, 480);
+            }
             ImGui::End();
         }
 
@@ -360,11 +605,8 @@ int main(int, char**)
 #ifdef __EMSCRIPTEN__
     EMSCRIPTEN_MAINLOOP_END;
 #endif
-    if (camera) {
-        SDL_CloseCamera(camera);
-        camera = nullptr;
-    }
-    // Free camera/audio device lists
+    device.StopAll();
+    // Free camera_/audio device lists
     SDL_free(camera_fmts);
     SDL_free(camera_ids);
     SDL_free(mic_ids);
