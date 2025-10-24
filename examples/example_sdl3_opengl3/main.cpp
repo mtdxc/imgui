@@ -1,4 +1,4 @@
-// Dear ImGui: standalone example application for SDL3 + OpenGL
+﻿// Dear ImGui: standalone example application for SDL3 + OpenGL
 // (SDL is a cross-platform general purpose library for handling windows, inputs, OpenGL/Vulkan/Metal graphics context creation, etc.)
 
 // Learn about Dear ImGui:
@@ -22,12 +22,93 @@
 #include "../libs/emscripten/emscripten_mainloop_stub.h"
 #endif
 
+class SDLSurfaceTexture {
+private:
+    GLuint textureID;
+    int width, height;
+
+public:
+    SDLSurfaceTexture() : textureID(0), width(0), height(0) {
+        // 创建纹理
+        glGenTextures(1, &textureID);
+    }
+
+    ~SDLSurfaceTexture() {
+        if (textureID) {
+            glDeleteTextures(1, &textureID);
+        }
+    }
+
+    bool LoadFromSurface(SDL_Surface* surface) {
+        if (!surface) return false;
+
+        // 获取表面信息
+        width = surface->w;
+        height = surface->h;
+        GLenum texture_format = GL_RGBA;
+        // 确定纹理格式
+        switch (surface->format) {
+        case SDL_PIXELFORMAT_RGBA32:
+            texture_format = GL_RGBA;
+            break;
+        //case SDL_PIXELFORMAT_ARGB32:
+        //case SDL_PIXELFORMAT_ABGR32:
+        case SDL_PIXELFORMAT_BGRA32:
+            texture_format = GL_BGRA;
+            break;
+        case SDL_PIXELFORMAT_RGB24:
+            texture_format = GL_RGB;
+            break;
+        case SDL_PIXELFORMAT_BGR24:
+            texture_format = GL_BGR;
+            break;
+        default:
+        {
+            // 不支持其他格式，需要转换
+            SDL_Surface* converted = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
+            if (!converted) return false;
+
+            bool result = LoadFromSurface(converted);
+            SDL_DestroySurface(converted);
+            return result;
+        }
+        }
+
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        // 设置纹理参数
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        // 上传纹理数据
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+            texture_format, GL_UNSIGNED_BYTE, surface->pixels);
+
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return true;
+    }
+
+    void Draw(float size_x = -1, float size_y = -1) {
+        if (!textureID) return;
+
+        if (size_x < 0) size_x = (float)width;
+        if (size_y < 0) size_y = (float)height;
+
+        ImGui::Image((void*)(intptr_t)textureID, ImVec2(size_x, size_y));
+    }
+
+    GLuint GetTextureID() const { return textureID; }
+    int GetWidth() const { return width; }
+    int GetHeight() const { return height; }
+};
+
 // Main code
 int main(int, char**)
 {
     // Setup SDL
     // [If using SDL_MAIN_USE_CALLBACKS: all code below until the main loop starts would likely be your SDL_AppInit() function]
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_CAMERA | SDL_INIT_AUDIO))
     {
         printf("Error: SDL_Init(): %s\n", SDL_GetError());
         return 1;
@@ -124,11 +205,32 @@ int main(int, char**)
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf");
     //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf");
     //IM_ASSERT(font != nullptr);
+    ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\msyh.ttc");
+    IM_ASSERT(font != nullptr);
 
     // Our state
     bool show_demo_window = true;
     bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+
+    SDLSurfaceTexture preview_texture;
+    SDL_Camera* camera = nullptr;
+    int fmt_idx = 0, camera_fmt_count = 0;
+    SDL_CameraSpec** camera_fmts = nullptr;
+    int camera_idx = 0, camera_count = 0;
+    SDL_CameraID* camera_ids = SDL_GetCameras(&camera_count);
+    if (camera_count) {
+        camera_fmts = SDL_GetCameraSupportedFormats(camera_ids[camera_idx], &camera_fmt_count);
+    }
+    // SDL_free(camera_ids);
+
+    SDL_AudioStream* mic = nullptr;
+    int mic_idx = 0, mic_count = 0;
+    SDL_AudioDeviceID* mic_ids = SDL_GetAudioRecordingDevices(&mic_count);
+
+    SDL_AudioStream* spk = nullptr;
+    int spk_idx = 0, spk_count = 0;
+    SDL_AudioDeviceID* spk_ids = SDL_GetAudioPlaybackDevices(&spk_count);
 
     // Main loop
     bool done = false;
@@ -193,6 +295,47 @@ int main(int, char**)
             ImGui::Text("counter = %d", counter);
 
             ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+
+            if (mic_ids && ImGui::Combo("Microphone", &mic_idx, [](void* data, int idx) {
+                auto ids = (SDL_AudioDeviceID*)data;
+                return SDL_GetAudioDeviceName(ids[idx]);
+                }, mic_ids, mic_count)) {
+            }
+            if (spk_ids && ImGui::Combo("Speaker", &spk_idx, [](void* data, int idx) {
+                auto ids = (SDL_AudioDeviceID*)data;
+                return SDL_GetAudioDeviceName(ids[idx]);
+                }, spk_ids, spk_count)) {
+            }
+            if (camera_ids && ImGui::Combo("Camera", &camera_idx, [](void* data, int idx) {
+                auto ids = (SDL_CameraID*)data;
+                return SDL_GetCameraName(ids[idx]);
+                }, camera_ids, camera_count)) {
+                auto camera_id = camera_ids[camera_idx];
+                camera_fmts = SDL_GetCameraSupportedFormats(camera_id, &camera_fmt_count);
+            }
+            if (camera_fmts && ImGui::Combo("formats", &fmt_idx, [](void* data, int idx) {
+                auto ids = (SDL_CameraSpec**)data;
+                auto spec = ids[idx];
+                static char buff[64];
+                sprintf(buff, "%dx%d@%s", spec->width, spec->height, SDL_GetPixelFormatName(spec->format));
+                return (const char*)buff;
+                }, camera_fmts, camera_fmt_count)) {
+                if (camera) {
+                    SDL_CloseCamera(camera);
+                    camera = nullptr;
+                }
+                camera = SDL_OpenCamera(camera_ids[camera_idx], camera_fmts[fmt_idx]);
+            }
+            if (camera) {
+                Uint64 tsp;
+                SDL_Surface* frame = SDL_AcquireCameraFrame(camera, &tsp);
+                if (frame) {
+                    preview_texture.LoadFromSurface(frame);
+                    SDL_ReleaseCameraFrame(camera, frame);
+                }
+                preview_texture.Draw();
+            }
+
             ImGui::End();
         }
 
@@ -217,6 +360,15 @@ int main(int, char**)
 #ifdef __EMSCRIPTEN__
     EMSCRIPTEN_MAINLOOP_END;
 #endif
+    if (camera) {
+        SDL_CloseCamera(camera);
+        camera = nullptr;
+    }
+    // Free camera/audio device lists
+    SDL_free(camera_fmts);
+    SDL_free(camera_ids);
+    SDL_free(mic_ids);
+    SDL_free(spk_ids);
 
     // Cleanup
     // [If using SDL_MAIN_USE_CALLBACKS: all code below would likely be your SDL_AppQuit() function]
