@@ -128,20 +128,22 @@ struct AudioStreamClose {
     }
 };
 
+template <class T>
 class PcmBuffer {
     std::mutex lock_;
-    float* buff_;
+    T* buff_;
     int read_pos_ = 0;
     int write_pos_ = 0;
     int max_size_ = 8192;
+    static const int ELEM_SIZE = sizeof(T);
 public:
     PcmBuffer(int max_size) : max_size_(max_size) {
-        buff_ = new float[max_size];
+        buff_ = new T[max_size];
     }
     ~PcmBuffer() {
         delete[] buff_;
     }
-    float* data() const {
+    T* data() const {
         return buff_ + read_pos_;
     }
     int size() const {
@@ -150,17 +152,17 @@ public:
     void clear() {
         write_pos_ = read_pos_ = 0;
     }
-    int Read(float* buff, int size) {
+    int Read(T* buff, int size) {
         std::unique_lock<decltype(lock_)> l(lock_);
         int n = write_pos_ - read_pos_;
         if (size > n) {
-            memcpy(buff, &buff_[read_pos_], n * 4);
-            memset(buff + n, 0, 4 * (size - n));
+            memcpy(buff, buff_ + read_pos_, n * ELEM_SIZE);
+            memset(buff + n, 0, ELEM_SIZE * (size - n));
             read_pos_ = write_pos_ = 0;
             return n;
         }
         else {
-            memcpy(buff, &buff_[read_pos_], size * 4);
+            memcpy(buff, buff_ + read_pos_, size * ELEM_SIZE);
             read_pos_ += size;
             return size;
         }
@@ -170,18 +172,18 @@ public:
         if (max_size_ - write_pos_ < size) {
             if (read_pos_) {
                 write_pos_ -= read_pos_;
-                memmove(buff_, buff_ + read_pos_, write_pos_ * 4);
+                memmove(buff_, buff_ + read_pos_, write_pos_ * ELEM_SIZE);
                 read_pos_ = 0;
             }
             if (max_size_ - write_pos_ < size) {
                 // return -1;
                 int pos = write_pos_ - size;
-                memmove(buff_, buff_ + size, pos * 4);
-                memcpy(buff_ + pos, buff, size * 4);
+                memmove(buff_, buff_ + size, pos * ELEM_SIZE);
+                memcpy(buff_ + pos, buff, size * ELEM_SIZE);
                 return size;
             }
         }
-        memcpy(&buff_[write_pos_], buff, size * 4);
+        memcpy(&buff_[write_pos_], buff, size * ELEM_SIZE);
         write_pos_ += size;
         return size;
     }
@@ -190,7 +192,7 @@ public:
 class SDLDevice {
     std::unique_ptr<SDL_AudioStream, AudioStreamClose> mic_stream_, spk_stream_;
     std::unique_ptr<SDL_Camera, CameraClose> camera_;
-    PcmBuffer pcm;
+    PcmBuffer<float> pcm;
 public:
     SDLDevice() : pcm(8192) {
         SDL_Init(SDL_INIT_CAMERA | SDL_INIT_AUDIO);
@@ -217,7 +219,7 @@ public:
     bool StartRecord(SDL_AudioDeviceID id, const SDL_AudioSpec& aspec) {
         mic_stream_.reset(SDL_OpenAudioDeviceStream(id, &aspec, [](void* userdata, SDL_AudioStream* stream, int additional_amount, int total_amount) {
             // printf("Microphone stream callback: %d, %d\n", additional_amount, total_amount);
-            auto pcm = (PcmBuffer*)userdata;
+            auto pcm = (PcmBuffer<float>*)userdata;
             if (additional_amount > 0) {
                 char* buffer = new char[additional_amount];
                 int got = SDL_GetAudioStreamData(stream, buffer, additional_amount);
@@ -245,7 +247,7 @@ public:
     bool StartPlayout(SDL_AudioDeviceID id, const SDL_AudioSpec& aspec) {
         printSpec(aspec, "playout spec");
         spk_stream_.reset(SDL_OpenAudioDeviceStream(id, &aspec, [](void* userdata, SDL_AudioStream* stream, int additional_amount, int total_amount) {
-            auto pcm = (PcmBuffer*)userdata;
+            auto pcm = (PcmBuffer<float>*)userdata;
             if (additional_amount > 0) {
                 //printf("Speaker stream callback: %d, %d\n", additional_amount, total_amount);
                 /* feed the new data to the stream. It will queue at the end, and trickle out as the hardware needs more data. */
