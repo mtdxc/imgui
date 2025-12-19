@@ -10,6 +10,10 @@
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_opengl3.h"
+#ifdef _WIN32
+#include <io.h>
+#include "IconsFontAwesome6.h"
+#endif
 #include <stdio.h>
 #include <SDL3/SDL.h>
 #if defined(IMGUI_IMPL_OPENGL_ES2)
@@ -398,6 +402,19 @@ int main(int, char**)
 #ifdef _WIN32
     ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\msyh.ttc");
     IM_ASSERT(font != nullptr);
+
+    if (0 == access(FONT_ICON_FILE_NAME_FAS, 0)) {
+        float baseFontSize = 13.0f; // 13.0f is the size of the default font. Change to the font size you use.
+        float iconFontSize = baseFontSize * 2.0f / 3.0f; // FontAwesome fonts need to have their sizes reduced by 2.0f/3.0f in order to align correctly
+        // merge in icons from Font Awesome
+        static const ImWchar icons_ranges[] = { ICON_MIN_FA, ICON_MAX_16_FA, 0 };
+        ImFontConfig icons_config;
+        icons_config.MergeMode = true;
+        icons_config.PixelSnapH = true;
+        icons_config.GlyphMinAdvanceX = iconFontSize;
+        io.Fonts->AddFontFromFileTTF(FONT_ICON_FILE_NAME_FAS, iconFontSize, &icons_config, icons_ranges);
+        // use FONT_ICON_FILE_NAME_FAR if you want regular instead of solid
+    }
 #endif
     // Our state
     bool show_demo_window = true;
