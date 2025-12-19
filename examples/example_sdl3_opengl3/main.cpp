@@ -22,6 +22,7 @@
 #include <SDL3/SDL_opengl.h>
 #endif
 
+#include "howling.h"
 #include <mutex>
 #include <memory>
 #include <iostream>
@@ -197,6 +198,7 @@ class SDLDevice {
     std::unique_ptr<SDL_AudioStream, AudioStreamClose> mic_stream_, spk_stream_;
     std::unique_ptr<SDL_Camera, CameraClose> camera_;
     PcmBuffer<float> pcm;
+    std::unique_ptr<FeedbackSuppressor> suppressor_;
 public:
     SDLDevice() : pcm(8192) {
         SDL_Init(SDL_INIT_CAMERA | SDL_INIT_AUDIO);
@@ -251,21 +253,33 @@ public:
     bool StartPlayout(SDL_AudioDeviceID id, const SDL_AudioSpec& aspec) {
         printSpec(aspec, "playout spec");
         spk_stream_.reset(SDL_OpenAudioDeviceStream(id, &aspec, [](void* userdata, SDL_AudioStream* stream, int additional_amount, int total_amount) {
-            auto pcm = (PcmBuffer<float>*)userdata;
+            auto self = (SDLDevice*)userdata;
             if (additional_amount > 0) {
                 //printf("Speaker stream callback: %d, %d\n", additional_amount, total_amount);
                 /* feed the new data to the stream. It will queue at the end, and trickle out as the hardware needs more data. */
                 char* buffer = new char[additional_amount];
-                pcm->Read((float*)buffer, additional_amount / 4);
+                int n = self->pcm.Read((float*)buffer, additional_amount / 4);
+                if (n && self->suppressor_ && self->suppressor_->isEnabled()) {
+                    self->suppressor_->process((float*)buffer, (float*)buffer, n);
+                }
                 SDL_PutAudioStreamData(stream, buffer, additional_amount);
                 delete[] buffer;
             }
-        }, &pcm));
+        }, this));
         if (!spk_stream_) return false;
         SDL_AudioSpec ispec, ospec;
         SDL_GetAudioStreamFormat(spk_stream_.get(), &ispec, &ospec);
         printSpec(ispec, "playout in  spec");
         printSpec(ospec, "playout out spec");
+        int frameSize = 1024;
+        SDL_GetAudioDeviceFormat(id, &ispec, &frameSize);
+        if (frameSize > 4) {
+            printf("frameSize=%d\n", frameSize);
+            suppressor_.reset(new FeedbackSuppressor(ospec.freq, 8, frameSize, frameSize / 4));
+            suppressor_->setSuppressionAmount(0.7f);
+            suppressor_->setQFactor(12.0f);
+            suppressor_->setPeakThresholdDB(-35.0f);
+        }
         SDL_ResumeAudioStreamDevice(spk_stream_.get());
         return true;
     };
@@ -441,8 +455,8 @@ int main(int, char**)
     SDLDevice device;
     SDL_AudioSpec aspec;
     aspec.format = SDL_AUDIO_F32;
-    aspec.channels = 2;
-    aspec.freq = 16000;
+    aspec.channels = 1;
+    aspec.freq = 44100;
 
     // Main loop
     bool done = false;
@@ -547,6 +561,7 @@ int main(int, char**)
             if (spk_ids || mic_ids) {
                 ImGui::PlotLines("##wav", device.pcm_data(), device.pcm_size(), 0, nullptr, -1.0f, 1.0f, ImVec2(0, 80));
                 ImGui::SameLine();
+                ImGui::BeginChild("##wav_child", ImVec2(0, 60), true);
                 bool loop = device.isPlayout() && device.isRecord();
                 if (ImGui::Button(loop ? "Stop Loopback":"Start Lookback")) {
                     if (loop) {
@@ -558,6 +573,10 @@ int main(int, char**)
                         device.StartRecord(mic_ids[mic_idx], aspec);
                     }
                 }
+                if (ImGui::Button("howling test")) {
+                    test_howling();
+                }
+                ImGui::EndChild();
             }
 
             if (camera_ids) {
