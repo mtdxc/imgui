@@ -23,6 +23,7 @@
 #endif
 
 #include "howling.h"
+#include "feedback_suppression.h"
 #include <mutex>
 #include <memory>
 #include <iostream>
@@ -199,6 +200,8 @@ class SDLDevice {
     std::unique_ptr<SDL_Camera, CameraClose> camera_;
     PcmBuffer<float> pcm;
     std::unique_ptr<FeedbackSuppressor> suppressor_;
+    std::unique_ptr<FeedbackSuppression> fs_;
+
 public:
     SDLDevice() : pcm(8192) {
         SDL_Init(SDL_INIT_CAMERA | SDL_INIT_AUDIO);
@@ -259,6 +262,9 @@ public:
                 /* feed the new data to the stream. It will queue at the end, and trickle out as the hardware needs more data. */
                 char* buffer = new char[additional_amount];
                 int n = self->pcm.Read((float*)buffer, additional_amount / 4);
+                if (n && self->fs_ && self->fs_->enabled()) {
+                    self->fs_->processBlock((float*)buffer, (float*)buffer, n);
+                }
                 if (n && self->suppressor_ && self->suppressor_->isEnabled()) {
                     self->suppressor_->process((float*)buffer, (float*)buffer, n);
                 }
@@ -275,10 +281,13 @@ public:
         SDL_GetAudioDeviceFormat(id, &ispec, &frameSize);
         if (frameSize > 4) {
             printf("frameSize=%d\n", frameSize);
+            fs_.reset(new FeedbackSuppression(ospec.freq, frameSize));
+            /*
             suppressor_.reset(new FeedbackSuppressor(ospec.freq, 8, frameSize, frameSize / 4));
             suppressor_->setSuppressionAmount(0.7f);
             suppressor_->setQFactor(12.0f);
             suppressor_->setPeakThresholdDB(-35.0f);
+            */
         }
         SDL_ResumeAudioStreamDevice(spk_stream_.get());
         return true;
@@ -299,6 +308,9 @@ public:
     }
     void StopPreview() {
         camera_ = nullptr;
+    }
+    FeedbackSuppression* fs() {
+        return fs_.get();
     }
     // SDL_Camera* camera() { return camera_.get(); }
     std::shared_ptr<SDL_Surface> captureFrame(uint64_t* tsp) {
@@ -559,9 +571,9 @@ int main(int, char**)
                 }
             }
             if (spk_ids || mic_ids) {
-                ImGui::PlotLines("##wav", device.pcm_data(), device.pcm_size(), 0, nullptr, -1.0f, 1.0f, ImVec2(0, 80));
+                ImGui::PlotLines("##wav", device.pcm_data(), device.pcm_size(), 0, nullptr, -1.0f, 1.0f, ImVec2(0, 100));
                 ImGui::SameLine();
-                ImGui::BeginChild("##wav_child", ImVec2(0, 60), true);
+                ImGui::BeginChild("##wav_child", ImVec2(0, 100), true);
                 bool loop = device.isPlayout() && device.isRecord();
                 if (ImGui::Button(loop ? "Stop Loopback":"Start Lookback")) {
                     if (loop) {
@@ -571,6 +583,24 @@ int main(int, char**)
                     else{
                         device.StartPlayout(spk_ids[spk_idx], aspec);
                         device.StartRecord(mic_ids[mic_idx], aspec);
+                    }
+                }
+                if (auto fs = device.fs()) {
+                    float suppression_strength, threshold_db;
+                    fs->getParameters(suppression_strength, threshold_db);
+                    if(ImGui::SliderFloat("Suppression", &suppression_strength, 0.0f, 1.0f, "%.2f")) {
+                        fs->setParameters(suppression_strength, threshold_db);
+                    }
+                    if(ImGui::SliderFloat("Threshold dB", &threshold_db, -31.0f, 0.0f, "%.1f")) {
+                        fs->setParameters(suppression_strength, threshold_db);
+                    }
+                    if (ImGui::Button("Reset FS")) {
+                        fs->reset();
+                    }
+                    ImGui::SameLine();
+                    bool enabled = fs->enabled();
+                    if (ImGui::Checkbox("Enable FS", &enabled)) {
+                        fs->setEnabled(enabled);
                     }
                 }
                 if (ImGui::Button("howling test")) {

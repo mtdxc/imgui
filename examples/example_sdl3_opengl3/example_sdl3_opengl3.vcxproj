@@ -166,6 +166,7 @@
     <ClCompile Include="..\..\imgui_widgets.cpp" />
     <ClCompile Include="..\..\backends\imgui_impl_sdl3.cpp" />
     <ClCompile Include="..\..\backends\imgui_impl_opengl3.cpp" />
+    <ClCompile Include="feedback_suppression.cpp" />
     <ClCompile Include="howling.cpp" />
     <ClCompile Include="main.cpp" />
   </ItemGroup>
@@ -176,6 +177,7 @@
     <ClInclude Include="..\..\backends\imgui_impl_sdl3.h" />
     <ClInclude Include="..\..\backends\imgui_impl_opengl3.h" />
     <ClInclude Include="..\..\backends\imgui_impl_opengl3_loader.h" />
+    <ClInclude Include="feedback_suppression.h" />
     <ClInclude Include="howling.h" />
   </ItemGroup>
   <ItemGroup>
