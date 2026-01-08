@@ -34,6 +34,10 @@ void FeedbackSuppression::NotchFilter::updateCoefficients(float sample_rate) {
     float A = powf(10.0f, depth / 40.0f);  // 深度转换为线性增益
     float beta = sqrtf(A) * alpha;
 
+    // 限制极点半径，避免数值不稳定
+    const float max_beta = 0.99f;
+    beta = std::min(std::max(beta, -max_beta), max_beta);
+
     b0 = 1.0f;
     b1 = -2.0f * cos_w0;
     b2 = 1.0f;
@@ -138,7 +142,7 @@ vector<float> FeedbackSuppression::process(const vector<float>& input) {
     if (input.empty()||!enabled_) return input;
 
     vector<float> output;
-    
+    vector<float> norm; // OLA 归一化缓冲
     // 分帧处理
     size_t pos = 0;
     while (pos + fft_size_ <= input.size()) {
@@ -165,23 +169,23 @@ vector<float> FeedbackSuppression::process(const vector<float>& input) {
             processed_frame[i] = applyNotchFilters(frame[i]);
         }
 
-        // 应用窗函数（用于重叠相加）
-        for (int i = 0; i < fft_size_; ++i) {
-            processed_frame[i] *= window_[i];
-        }
-
-        // 重叠相加
+        // OLA
         if (output.size() < pos + fft_size_) {
             output.resize(pos + fft_size_, 0.0f);
+            norm.resize(pos + fft_size_, 0.0f);
         }
-
         for (int i = 0; i < fft_size_; ++i) {
             output[pos + i] += processed_frame[i];
+            norm[pos + i]   += window_[i] * window_[i];
         }
-
         pos += hop_size_;
     }
 
+    // 归一化，避免能量衰减
+    for (size_t i = 0; i < output.size(); ++i) {
+        if (norm[i] > 1e-8f) output[i] /= norm[i];
+        else output[i] = 0.0f;
+    }
     return output;
 }
 
@@ -239,9 +243,13 @@ void FeedbackSuppression::analyzeSpectrum(const vector<float>& frame) {
 }
 
 void FeedbackSuppression::detectFeedbackPeaks(const vector<float>& magnitude) {
+    // 计算全局最大值，用于噪声地板
+    float max_mag = 0.0f;
+    for (float m : magnitude) max_mag = std::max(max_mag, m);
+    const float noise_floor = std::max(1e-6f, 0.001f * max_mag); // 防止除零/极小值不稳定
+
     // 更新峰值历史
     for (int i = 0; i < num_bins_; ++i) {
-        float current_mag = magnitude[i];
         float freq = i * sample_rate_ / (float)fft_size_;
 
         // 只关注可能的啸叫频率范围（通常200Hz-8kHz）
@@ -249,6 +257,12 @@ void FeedbackSuppression::detectFeedbackPeaks(const vector<float>& magnitude) {
             peak_history_[i] = 0;
             continue;
         }
+
+        // 轻微平滑，降低抖动
+        float m_prev = magnitude[(i > 0) ? i - 1 : i];
+        float m_curr = magnitude[i];
+        float m_next = magnitude[(i < num_bins_ - 1) ? i + 1 : i];
+        float current_mag = (m_prev + m_curr + m_next) / 3.0f;
 
         // 检查是否是局部峰值
         bool is_peak = true;
@@ -272,7 +286,7 @@ void FeedbackSuppression::detectFeedbackPeaks(const vector<float>& magnitude) {
             avg_surround /= count;
 
             // 如果峰值显著高于周围频率
-            float peak_ratio = current_mag / (avg_surround + 1e-10f);
+            float peak_ratio = current_mag / (avg_surround + noise_floor);
             float peak_db = 20.0f * log10f(peak_ratio);
 
             if (peak_db > threshold_db_ && peak_ratio > threshold_linear_ * 2.0f) {
@@ -281,12 +295,25 @@ void FeedbackSuppression::detectFeedbackPeaks(const vector<float>& magnitude) {
                 // 如果连续检测到多次，确认为啸叫
                 if (peak_history_[i] >= min_fb_age_) {
                     // 添加到检测到的频率列表
+                    const float dup_hz = 5.0f; // 近似相同频点去重
+                    bool already_tracked = false;
+                    for (float f : detected_frequencies_) {
+                        if (fabsf(f - freq) < dup_hz) {
+                            already_tracked = true;
+                            break;
+                        }
+                    }
+                    if (!already_tracked) {
                         detected_frequencies_.push_back(freq);
+                    }
 
                     // 限制列表大小
                     if (detected_frequencies_.size() > 20) {
                         detected_frequencies_.erase(detected_frequencies_.begin());
                     }
+                    // 抑制相邻 bin 的重复计数
+                    if (i > 0) peak_history_[i - 1] = 0;
+                    if (i + 1 < num_bins_) peak_history_[i + 1] = 0;
                 }
             } else if (peak_history_[i]) {
                 peak_history_[i]--;
@@ -320,11 +347,13 @@ void FeedbackSuppression::updateNotchFilters() {
         filter.age++;
     }
 
-    // 移除旧的滤波器
+    // 移除旧的滤波器（自适应老化时间，约5秒）
+    const float frames_per_sec = sample_rate_ / static_cast<float>(hop_size_);
+    const int max_age_frames = static_cast<int>(std::max(200.0f, frames_per_sec * 5.0f));
     auto it = remove_if(notch_filters_.begin(), notch_filters_.end(),
-                       [](const NotchFilter& f) { return f.age > 500; });
+                       [max_age_frames](const NotchFilter& f) { return f.age > max_age_frames; });
     if (it != notch_filters_.end()) {
-        notch_filters_.erase(it, notch_filters_.end());
+    notch_filters_.erase(it, notch_filters_.end());
     }
 
     // 添加新的滤波器（如果需要）
@@ -332,10 +361,17 @@ void FeedbackSuppression::updateNotchFilters() {
         float freq = detected_peaks[i].first;
         float strength = detected_peaks[i].second;
 
+        // 自适应带宽：低频稍宽，高频更窄（单位：倍频程）
+        float bw_oct = (freq < 1000.0f) ? 0.25f : 0.12f;
         // 检查是否已经有相近频率的滤波器
         bool exists = false;
         for (auto& filter : notch_filters_) {
             if (abs(filter.center_freq - freq) < 10.0f) {
+                filter.center_freq = freq;
+                filter.bandwidth   = bw_oct;
+                filter.reset();
+                filter.age = 0;
+                filter.updateCoefficients(sample_rate_);
                 exists = true;
                 break;
             }
@@ -344,9 +380,19 @@ void FeedbackSuppression::updateNotchFilters() {
         if (!exists) {
             // 根据强度设置深度
             float depth = -24.0f * suppression_strength_;
-            NotchFilter new_filter(freq, 1.0f, depth); // 1.0倍频程带宽
+            NotchFilter new_filter(freq, bw_oct, depth); // 1.0倍频程带宽
             new_filter.updateCoefficients(sample_rate_);
+            if (notch_filters_.size()<max_filters_) {
                 notch_filters_.push_back(new_filter);
+            } else {
+                // 替换最老的滤波器
+                auto oldest_it = max_element(notch_filters_.begin(), notch_filters_.end(),
+                                             [](const NotchFilter& a, const NotchFilter& b) {
+                                                 return a.age < b.age;
+                                             });
+                *oldest_it = new_filter;
+                oldest_it->reset();
+            }
 
             cout << "Added notch filter at " << freq << " Hz, depth: " << depth << ", " << strength
                  << " dB, now have " << notch_filters_.size() << " filters." << endl;
