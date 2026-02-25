@@ -15,6 +15,9 @@ struct PacketEdit {
     int64_t original_dts = AV_NOPTS_VALUE;
     int64_t edited_pts = AV_NOPTS_VALUE;
     int64_t edited_dts = AV_NOPTS_VALUE;
+    int size = 0;
+    int flags = 0;
+    int64_t pos = 0;
     int64_t duration = 0;
     bool deleted = false;
 };

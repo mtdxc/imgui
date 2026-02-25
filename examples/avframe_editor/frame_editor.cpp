@@ -52,6 +52,9 @@ bool FrameEditor::Load(const std::string& input_path, std::string& err) {
         edit.edited_pts = edit.original_pts = pkt.pts * TIME_BASE * av_q2d(in_stream->time_base);
         edit.edited_dts = edit.original_dts = pkt.dts * TIME_BASE * av_q2d(in_stream->time_base);
         edit.duration = pkt.duration * TIME_BASE * av_q2d(in_stream->time_base);
+        edit.size = pkt.size;
+        edit.flags = pkt.flags;
+        edit.pos = pkt.pos;
         stream_index_map_[pkt.stream_index].push_back(packet_index);
         edits_.push_back(edit);
         av_packet_unref(&pkt);

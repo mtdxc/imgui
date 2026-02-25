@@ -75,7 +75,8 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
 
     ImGui::Separator();
     ImGui::TextWrapped("Status: %s", status.c_str());
-    ImGui::SameLine();
+    
+    ImGui::SetNextItemWidth(150);
     static int stream_filter_idx = 0;
     ImGui::Combo("Stream Filter", &stream_filter_idx, [](void* data, int idx) {
         auto& editor = *static_cast<FrameEditor*>(data);
@@ -87,7 +88,14 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
         sprintf(buff, "Stream %d", stream_index);
         return (const char*)buff;
     }, &editor, static_cast<int>(editor.StreamCount() + 1));
-    if (ImGui::BeginTable("packets", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+    ImGui::SameLine();
+    static bool pts_dts = false;
+    ImGui::Checkbox("PTS=DTS", &pts_dts);
+    ImGui::SameLine();
+    static bool drop_util_flag = true;
+    ImGui::Checkbox("DropToFlag", &drop_util_flag);
+
+    if (ImGui::BeginTable("packets", 10, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
         ImGui::TableSetupScrollFreeze(0, 1); // Make top row always visible
         ImGui::TableSetupColumn("Idx");
         ImGui::TableSetupColumn("Stream");
@@ -95,6 +103,9 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
         ImGui::TableSetupColumn("DTS");
         ImGui::TableSetupColumn("Orig PTS");
         ImGui::TableSetupColumn("Orig DTS");
+        ImGui::TableSetupColumn("Size");
+        ImGui::TableSetupColumn("Pos");
+        ImGui::TableSetupColumn("Flags");
         ImGui::TableSetupColumn("Delete");
         ImGui::TableHeadersRow();
 
@@ -121,14 +132,17 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
                 ImGui::Text("%d", e->stream_index);
 
                 ImGui::TableSetColumnIndex(2);
-                
                 ImGui::PushID(static_cast<int>(e->packet_index * 10 + 1));
-                ImGui::InputScalar("##pts", ImGuiDataType_S64, &e->edited_pts);
+                if (ImGui::InputScalar("##pts", ImGuiDataType_S64, &e->edited_pts) && pts_dts) {
+                    e->edited_dts = e->edited_pts;
+                }
                 ImGui::PopID();
 
                 ImGui::TableSetColumnIndex(3);
                 ImGui::PushID(static_cast<int>(e->packet_index * 10 + 2));
-                ImGui::InputScalar("##dts", ImGuiDataType_S64, &e->edited_dts);
+                if (ImGui::InputScalar("##dts", ImGuiDataType_S64, &e->edited_dts) && pts_dts) {
+                    e->edited_pts = e->edited_dts;
+                }
                 ImGui::PopID();
 
                 ImGui::TableSetColumnIndex(4);
@@ -138,8 +152,35 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
                 ImGui::Text("%lld", static_cast<long long>(e->original_dts));
 
                 ImGui::TableSetColumnIndex(6);
+                ImGui::Text("%d", e->size);
+
+                ImGui::TableSetColumnIndex(7);
+                ImGui::Text("%lld", static_cast<long long>(e->pos));
+
+                ImGui::TableSetColumnIndex(8);
+                ImGui::Text("%d", e->flags);
+
+                ImGui::TableSetColumnIndex(9);
                 ImGui::PushID(static_cast<int>(e->packet_index * 10 + 3));
-                ImGui::Checkbox("##delete", &e->deleted);
+                if (ImGui::Checkbox("##delete", &e->deleted) && drop_util_flag) {
+                    if (vec) {
+                        for(int j = row + 1; j < vec->size(); ++j) {
+                            auto n = editor.Edit(vec->at(j));
+                            if (!n || n->flags) {
+                                break;
+                            }
+                            n->deleted = e->deleted;
+                        }
+                    } else {
+                        for (int j = row + 1; j<editor.EditCount(); ++j) {
+                            auto n = editor.Edit(j);
+                            if (!n) break;
+                            if (n->stream_index != e->stream_index) continue;
+                            if (n->flags) break;   
+                            n->deleted = e->deleted;
+                        }
+                    }
+                }
                 ImGui::PopID();
             }
         }
