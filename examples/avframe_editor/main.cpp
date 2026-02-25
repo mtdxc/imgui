@@ -79,13 +79,13 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
     ImGui::SetNextItemWidth(150);
     static int stream_filter_idx = 0;
     ImGui::Combo("Stream Filter", &stream_filter_idx, [](void* data, int idx) {
-        auto& editor = *static_cast<FrameEditor*>(data);
         if (idx == 0) {
             return "All";
         }
         int stream_index = idx - 1;
         static char buff[32];
-        sprintf(buff, "Stream %d", stream_index);
+        auto stream = static_cast<FrameEditor*>(data)->getStream(stream_index);
+        sprintf(buff, "%s %d", av_get_media_type_string((AVMediaType)stream->type), stream_index);
         return (const char*)buff;
     }, &editor, static_cast<int>(editor.StreamCount() + 1));
     ImGui::SameLine();
@@ -110,13 +110,13 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
         ImGui::TableHeadersRow();
 
         ImGuiListClipper clipper;
-        auto vec = editor.Stream(stream_filter_idx - 1);
-        clipper.Begin(vec?vec->size():editor.EditCount());
+        auto stm = editor.getStream(stream_filter_idx - 1);
+        clipper.Begin(stm ? stm->size() : editor.EditCount());
         while (clipper.Step()) {
             for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
                 PacketEdit* e = nullptr;
-                if (vec) {
-                    e = editor.Edit(vec->at(row));
+                if (stm) {
+                    e = editor.Edit(stm->index[row]);
                 } else {
                     e = editor.Edit(row);
                 }
@@ -137,7 +137,6 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
                     e->edited_dts = e->edited_pts;
                 }
                 ImGui::PopID();
-
                 ImGui::TableSetColumnIndex(3);
                 ImGui::PushID(static_cast<int>(e->packet_index * 10 + 2));
                 if (ImGui::InputScalar("##dts", ImGuiDataType_S64, &e->edited_dts) && pts_dts) {
@@ -163,9 +162,9 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
                 ImGui::TableSetColumnIndex(9);
                 ImGui::PushID(static_cast<int>(e->packet_index * 10 + 3));
                 if (ImGui::Checkbox("##delete", &e->deleted) && drop_util_flag) {
-                    if (vec) {
-                        for(int j = row + 1; j < vec->size(); ++j) {
-                            auto n = editor.Edit(vec->at(j));
+                    if (stm) {
+                        for(int j = row + 1; j < stm->size(); ++j) {
+                            auto n = editor.Edit(stm->index[j]);
                             if (!n || n->flags) {
                                 break;
                             }

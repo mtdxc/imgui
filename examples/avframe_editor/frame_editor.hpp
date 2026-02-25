@@ -22,13 +22,20 @@ struct PacketEdit {
     bool deleted = false;
 };
 
+struct Stream {
+    int type = -1;
+    std::vector<int> index;
+    void add(int idx){index.push_back(idx);};
+    int size() const { return index.size(); }
+};
+
 class FrameEditor {
 public:
     bool Load(const std::string& input_path, std::string& err);
     bool SaveAs(const std::string& output_path, std::string& err);
 
     size_t StreamCount() const { return stream_index_map_.size(); }
-    std::vector<int>* Stream(int idx) { 
+    Stream* getStream(int idx) { 
         auto it = stream_index_map_.find(idx);
         if (it == stream_index_map_.end()) {
             return nullptr;
@@ -50,5 +57,5 @@ private:
 
     std::string input_path_;
     std::vector<PacketEdit> edits_;
-    std::map<int, std::vector<int>> stream_index_map_;
+    std::map<int, Stream> stream_index_map_;
 };

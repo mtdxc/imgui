@@ -39,7 +39,9 @@ bool FrameEditor::Load(const std::string& input_path, std::string& err) {
         avformat_close_input(&in_fmt);
         return false;
     }
-
+    for (int i=0; i<in_fmt->nb_streams; ++i) {
+        stream_index_map_[i] = Stream{in_fmt->streams[i]->codecpar->codec_type, {}};
+    }
     AVPacket pkt;
     av_init_packet(&pkt);
 
@@ -55,7 +57,7 @@ bool FrameEditor::Load(const std::string& input_path, std::string& err) {
         edit.size = pkt.size;
         edit.flags = pkt.flags;
         edit.pos = pkt.pos;
-        stream_index_map_[pkt.stream_index].push_back(packet_index);
+        stream_index_map_[pkt.stream_index].add(packet_index);
         edits_.push_back(edit);
         av_packet_unref(&pkt);
         packet_index++;
