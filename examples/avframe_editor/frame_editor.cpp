@@ -22,6 +22,7 @@ void FrameEditor::Clear() {
     stream_index_map_.clear();
 }
 
+#define TIME_BASE 1000
 bool FrameEditor::Load(const std::string& input_path, std::string& err) {
     Clear();
 
@@ -44,14 +45,13 @@ bool FrameEditor::Load(const std::string& input_path, std::string& err) {
 
     int64_t packet_index = 0;
     while ((ret = av_read_frame(in_fmt, &pkt)) >= 0) {
+        AVStream* in_stream = in_fmt->streams[pkt.stream_index];
         PacketEdit edit;
         edit.packet_index = packet_index;
         edit.stream_index = pkt.stream_index;
-        edit.original_pts = pkt.pts;
-        edit.original_dts = pkt.dts;
-        edit.edited_pts = pkt.pts;
-        edit.edited_dts = pkt.dts;
-        edit.duration = pkt.duration;
+        edit.edited_pts = edit.original_pts = pkt.pts * TIME_BASE * av_q2d(in_stream->time_base);
+        edit.edited_dts = edit.original_dts = pkt.dts * TIME_BASE * av_q2d(in_stream->time_base);
+        edit.duration = pkt.duration * TIME_BASE * av_q2d(in_stream->time_base);
         stream_index_map_[pkt.stream_index].push_back(packet_index);
         edits_.push_back(edit);
         av_packet_unref(&pkt);
@@ -152,6 +152,8 @@ bool FrameEditor::SaveAs(const std::string& output_path, std::string& err) {
     int64_t packet_index = 0;
 
     while ((ret = av_read_frame(in_fmt, &pkt)) >= 0) {
+        AVStream* in_stream = in_fmt->streams[pkt.stream_index];
+        AVStream* out_stream = out_fmt->streams[pkt.stream_index];
         auto it = edit_map.find(packet_index++);
         if (it != edit_map.end()) {
             const PacketEdit* e = it->second;
@@ -159,14 +161,13 @@ bool FrameEditor::SaveAs(const std::string& output_path, std::string& err) {
                 av_packet_unref(&pkt);
                 continue;
             }
-            pkt.pts = e->edited_pts;
-            pkt.dts = e->edited_dts;
+            pkt.pts = e->edited_pts / av_q2d(out_stream->time_base) / TIME_BASE;
+            pkt.dts = e->edited_dts / av_q2d(out_stream->time_base) / TIME_BASE;
+            pkt.duration = e->duration / av_q2d(out_stream->time_base) / TIME_BASE;
         }
 
-        AVStream* in_stream = in_fmt->streams[pkt.stream_index];
-        AVStream* out_stream = out_fmt->streams[pkt.stream_index];
         // 关键：从输入 time_base 转到输出 time_base
-        av_packet_rescale_ts(&pkt, in_stream->time_base, out_stream->time_base);
+        // av_packet_rescale_ts(&pkt, in_stream->time_base, out_stream->time_base);
         pkt.pos = -1;
 
         ret = av_interleaved_write_frame(out_fmt, &pkt);
