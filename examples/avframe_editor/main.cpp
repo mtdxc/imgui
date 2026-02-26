@@ -162,21 +162,43 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
                 ImGui::TableSetColumnIndex(9);
                 ImGui::PushID(static_cast<int>(e->packet_index * 10 + 3));
                 if (ImGui::Checkbox("##delete", &e->deleted) && drop_util_flag) {
-                    if (stm) {
-                        for(int j = row + 1; j < stm->size(); ++j) {
-                            auto n = editor.Edit(stm->index[j]);
-                            if (!n || n->flags) {
-                                break;
+                    if (e->deleted) {
+                        if (stm) {
+                            for(int j = row + 1; j < stm->size(); ++j) {
+                                auto n = editor.Edit(stm->index[j]);
+                                if (!n || n->flags) {
+                                    break;
+                                }
+                                n->deleted = e->deleted;
                             }
-                            n->deleted = e->deleted;
+                        } else {
+                            for (int j = row + 1; j<editor.EditCount(); ++j) {
+                                auto n = editor.Edit(j);
+                                if (!n) break;
+                                if (n->stream_index != e->stream_index) continue;
+                                if (n->flags) break;   
+                                n->deleted = e->deleted;
+                            }
                         }
-                    } else {
-                        for (int j = row + 1; j<editor.EditCount(); ++j) {
-                            auto n = editor.Edit(j);
-                            if (!n) break;
-                            if (n->stream_index != e->stream_index) continue;
-                            if (n->flags) break;   
-                            n->deleted = e->deleted;
+                    }
+                    else{
+                        if (stm) {
+                            for(int j = row; j >= 0; j--) {
+                                auto n = editor.Edit(stm->index[j]);
+                                if (!n) break;
+                                n->deleted = e->deleted;
+                                if (n->flags) {
+                                    break;
+                                }
+                            }
+                        } else {
+                            for (int j = row; j >= 0; j--) {
+                                auto n = editor.Edit(j);
+                                if (!n) break;
+                                if (n->stream_index != e->stream_index) continue;
+                                n->deleted = e->deleted;
+                                if (n->flags) break;   
+                            }
                         }
                     }
                 }
