@@ -48,18 +48,32 @@ bool InitSdlAndGl(SDL_Window** window, SDL_GLContext* gl_context) {
     return true;
 }
 
+bool LoadFile(FrameEditor& editor, const char* input_path, std::string& status) {
+    std::string err;
+    if (editor.Load(input_path, err)) {
+        status = "Loaded packets: " + std::to_string(editor.EditCount());
+        char line[256];
+        for(int i=0; i<editor.StreamCount(); ++i) {
+            auto s = editor.getStream(i);
+            if (s) {
+                sprintf(line, ", %s %d: %d packets", av_get_media_type_string((AVMediaType)s->type), i, s->size());
+                status += line;
+            }
+        }
+        return true;
+    } else {
+        status = "Load failed: " + err;
+        return false;
+    }
+}
+
 void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char* output_path, size_t output_size, std::string& status) {
     ImGui::Begin("AVFrame Timestamp Editor");
 
     ImGui::InputText("Input file", input_path, input_size);
     ImGui::SameLine();
     if (ImGui::Button("Load")) {
-        std::string err;
-        if (editor.Load(input_path, err)) {
-            status = "Loaded packets: " + std::to_string(editor.EditCount());
-        } else {
-            status = "Load failed: " + err;
-        }
+        LoadFile(editor, input_path, status);
     }
 
     ImGui::InputText("Output file", output_path, output_size);
@@ -246,13 +260,10 @@ int main(int, char**) {
                 done = true;
             }
             if (event.type == SDL_DROPFILE) {
-                std::string err;
-                if (editor.Load(event.drop.file, err)) {
-                    status = "Loaded packets: " + std::to_string(editor.EditCount());
+                if (LoadFile(editor, event.drop.file, status)) {
                     strncpy(input_path, event.drop.file, sizeof(input_path) - 1);
-                } else {
-                    status = "Load failed: " + err;
                 }
+                SDL_free(event.drop.file);
             }
             if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE && event.window.windowID == SDL_GetWindowID(window)) {
                 done = true;
