@@ -89,10 +89,11 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
 
     ImGui::Separator();
     ImGui::TextWrapped("Status: %s", status.c_str());
-    
+
     ImGui::SetNextItemWidth(150);
+    static int cur_sel = 0;
     static int stream_filter_idx = 0;
-    ImGui::Combo("Stream Filter", &stream_filter_idx, [](void* data, int idx) {
+    if(ImGui::Combo("Stream Filter", &stream_filter_idx, [](void* data, int idx) {
         if (idx == 0) {
             return "All";
         }
@@ -101,14 +102,15 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
         auto stream = static_cast<FrameEditor*>(data)->getStream(stream_index);
         sprintf(buff, "%s %d", av_get_media_type_string((AVMediaType)stream->type), stream_index);
         return (const char*)buff;
-    }, &editor, static_cast<int>(editor.StreamCount() + 1));
+    }, &editor, static_cast<int>(editor.StreamCount() + 1))) {
+        cur_sel = 0;
+    }
     ImGui::SameLine();
     static bool pts_dts = false;
     ImGui::Checkbox("PTS=DTS", &pts_dts);
     ImGui::SameLine();
     static bool drop_util_flag = true;
     ImGui::Checkbox("DropToFlag", &drop_util_flag);
-
     if (ImGui::BeginTable("packets", 10, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
         ImGui::TableSetupScrollFreeze(0, 1); // Make top row always visible
         ImGui::TableSetupColumn("Idx");
@@ -122,10 +124,19 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
         ImGui::TableSetupColumn("Flags");
         ImGui::TableSetupColumn("Delete");
         ImGui::TableHeadersRow();
+        auto stm = editor.getStream(stream_filter_idx - 1);
+        int items = stm ? stm->size() : editor.EditCount();
+        if (items > 0 && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::IsAnyItemActive()) {
+            if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
+                cur_sel = std::max(0, cur_sel - 1);
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
+                cur_sel = std::min(items - 1, cur_sel + 1);
+            }
+        }
 
         ImGuiListClipper clipper;
-        auto stm = editor.getStream(stream_filter_idx - 1);
-        clipper.Begin(stm ? stm->size() : editor.EditCount());
+        clipper.Begin(items);
         while (clipper.Step()) {
             for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
                 PacketEdit* e = nullptr;
@@ -138,7 +149,10 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
                     continue;
                 }
                 ImGui::TableNextRow();
-
+                if (row == cur_sel) {
+                    ImGui::SetScrollHereY();
+                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(255, 255, 0, 50));
+                }
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Text("%lld", static_cast<long long>(e->packet_index));
 
@@ -190,7 +204,7 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
                                 auto n = editor.Edit(j);
                                 if (!n) break;
                                 if (n->stream_index != e->stream_index) continue;
-                                if (n->flags) break;   
+                                if (n->flags) break;
                                 n->deleted = e->deleted;
                             }
                         }
@@ -211,7 +225,7 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
                                 if (!n) break;
                                 if (n->stream_index != e->stream_index) continue;
                                 n->deleted = e->deleted;
-                                if (n->flags) break;   
+                                if (n->flags) break;
                             }
                         }
                     }
