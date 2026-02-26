@@ -111,6 +111,7 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
     ImGui::SameLine();
     static bool drop_util_flag = true;
     ImGui::Checkbox("DropToFlag", &drop_util_flag);
+    static float row_min_height = ImGui::GetFrameHeight();
     if (ImGui::BeginTable("packets", 10, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
         ImGui::TableSetupScrollFreeze(0, 1); // Make top row always visible
         ImGui::TableSetupColumn("Idx");
@@ -137,6 +138,7 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
 
         ImGuiListClipper clipper;
         clipper.Begin(items);
+        // clipper.IncludeItemByIndex(cur_sel);
         while (clipper.Step()) {
             for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
                 PacketEdit* e = nullptr;
@@ -148,13 +150,18 @@ void DrawEditorUI(FrameEditor& editor, char* input_path, size_t input_size, char
                 if(!e) {
                     continue;
                 }
-                ImGui::TableNextRow();
+                ImGui::TableNextRow(ImGuiTableRowFlags_None, row_min_height);
+                ImGui::TableSetColumnIndex(0);
+                //ImGui::Text("%lld", static_cast<long long>(e->packet_index));
+                char label[32];
+                sprintf(label, "%lld", e->packet_index);
+                if (ImGui::Selectable(label, row == cur_sel, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap, ImVec2(0, row_min_height))) {
+                    cur_sel = row;
+                }
                 if (row == cur_sel) {
                     ImGui::SetScrollHereY();
-                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(255, 255, 0, 50));
+                    //ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(255, 255, 0, 50));
                 }
-                ImGui::TableSetColumnIndex(0);
-                ImGui::Text("%lld", static_cast<long long>(e->packet_index));
 
                 ImGui::TableSetColumnIndex(1);
                 ImGui::Text("%d", e->stream_index);
