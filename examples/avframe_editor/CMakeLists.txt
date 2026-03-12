@@ -42,6 +42,7 @@ target_include_directories(avframe_editor PRIVATE
 
 target_link_libraries(avframe_editor PRIVATE
     PkgConfig::FFMPEG
+    $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
     SDL2::SDL2
     OpenGL::GL
 )
