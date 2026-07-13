@@ -4,12 +4,54 @@ project(avframe_editor LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-    libavformat
-    libavcodec
-    libavutil
-)
+if(WIN32)
+    find_program(FFMPEG_EXECUTABLE NAMES ffmpeg ffmpeg.exe REQUIRED)
+    get_filename_component(FFMPEG_BIN_DIR "${FFMPEG_EXECUTABLE}" DIRECTORY)
+    get_filename_component(FFMPEG_ROOT_DIR "${FFMPEG_BIN_DIR}" DIRECTORY)
+
+    find_path(FFMPEG_INCLUDE_DIR
+        NAMES libavcodec/avcodec.h
+        HINTS "${FFMPEG_ROOT_DIR}"
+        PATH_SUFFIXES include
+        REQUIRED
+    )
+
+    find_library(FFMPEG_AVFORMAT_LIBRARY
+        NAMES avformat libavformat
+        HINTS "${FFMPEG_ROOT_DIR}"
+        PATH_SUFFIXES lib bin
+        REQUIRED
+    )
+    find_library(FFMPEG_AVCODEC_LIBRARY
+        NAMES avcodec libavcodec
+        HINTS "${FFMPEG_ROOT_DIR}"
+        PATH_SUFFIXES lib bin
+        REQUIRED
+    )
+    find_library(FFMPEG_AVUTIL_LIBRARY
+        NAMES avutil libavutil
+        HINTS "${FFMPEG_ROOT_DIR}"
+        PATH_SUFFIXES lib bin
+        REQUIRED
+    )
+
+    set(FFMPEG_INCLUDE_DIRS "${FFMPEG_INCLUDE_DIR}")
+    set(FFMPEG_LIBRARIES
+        "${FFMPEG_AVFORMAT_LIBRARY}"
+        "${FFMPEG_AVCODEC_LIBRARY}"
+        "${FFMPEG_AVUTIL_LIBRARY}"
+    )
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+        libavformat
+        libavcodec
+        libavutil
+    )
+
+    set(FFMPEG_INCLUDE_DIRS "")
+    set(FFMPEG_LIBRARIES PkgConfig::FFMPEG)
+endif()
 
 find_package(SDL2 REQUIRED)
 find_package(OpenGL REQUIRED)
@@ -38,10 +80,11 @@ target_include_directories(avframe_editor PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${SDL2_INCLUDE_DIRS}
+    ${FFMPEG_INCLUDE_DIRS}
 )
 
 target_link_libraries(avframe_editor PRIVATE
-    PkgConfig::FFMPEG
+    ${FFMPEG_LIBRARIES}
     $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
     SDL2::SDL2
     OpenGL::GL
