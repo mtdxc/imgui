@@ -2,7 +2,7 @@
 @set SDL3_DIR=..\libs\sdl3
 @set OUT_EXE=example_sdl3_opengl3
 @set INCLUDES=/I..\.. /I..\..\backends /I%SDL3_DIR%\include
-@set SOURCES=main.cpp ..\..\backends\imgui_impl_sdl3.cpp ..\..\backends\imgui_impl_opengl3.cpp ..\..\imgui*.cpp
+@set SOURCES=main.cpp avp_afe_howling.c ..\..\backends\imgui_impl_sdl3.cpp ..\..\backends\imgui_impl_opengl3.cpp ..\..\imgui*.cpp
 @set LIBS=/LIBPATH:%SDL3_DIR%\lib\x86 SDL3.lib opengl32.lib shell32.lib
 
 @set OUT_DIR=Debug

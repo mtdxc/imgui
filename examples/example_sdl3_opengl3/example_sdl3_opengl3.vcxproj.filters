@@ -40,6 +40,9 @@
     <ClCompile Include="feedback_suppression.cpp">
       <Filter>sources</Filter>
     </ClCompile>
+    <ClCompile Include="avp_afe_howling.c">
+      <Filter>sources</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\imconfig.h">
@@ -64,6 +67,9 @@
       <Filter>sources</Filter>
     </ClInclude>
     <ClInclude Include="feedback_suppression.h">
+      <Filter>sources</Filter>
+    </ClInclude>
+    <ClInclude Include="avp_afe_howling.h">
       <Filter>sources</Filter>
     </ClInclude>
   </ItemGroup>

@@ -24,6 +24,7 @@
 
 #include "howling.h"
 #include "feedback_suppression.h"
+#include "avp_afe_howling.h"
 #include <mutex>
 #include <memory>
 #include <iostream>
@@ -201,13 +202,36 @@ class SDLDevice {
     PcmBuffer<float> pcm;
     std::unique_ptr<FeedbackSuppressor> suppressor_;
     std::unique_ptr<FeedbackSuppression> fs_;
-
 public:
+    avp_afe_howling_t* avp_ = nullptr;
+    uint32_t avp_samples_ = 0;
+    bool initAvp(int samplerate, int channel) {
+        if (avp_) {
+            avp_afe_howling_close(avp_);
+            avp_ = nullptr;
+        }
+        avp_afe_howling_config_t config = {0};
+        config.sample_rate = samplerate;
+        config.channels = channel;
+        config.papr_th = 8.0f;
+        config.phpr_th = 6.0f;
+        config.pnpr_th = 6.0f;
+        config.notch_q = 12.0f;
+        config.max_notches = AVP_AFE_HOWLING_MAX_NOTCHES;
+        avp_afe_howling_open(&config, &avp_);
+        avp_samples_ = avp_afe_howling_get_frame_samples(avp_) * channel;
+        printf("avp_afe_howling_open: %p %d\n", (void*)avp_, avp_samples_);
+        return avp_ != nullptr;
+    }
     SDLDevice() : pcm(8192) {
         SDL_Init(SDL_INIT_CAMERA | SDL_INIT_AUDIO);
     }
     virtual ~SDLDevice() {
         StopAll();
+        if (avp_) {
+            avp_afe_howling_close(avp_);
+            avp_ = nullptr;
+        }
     }
     void StopAll() {
         StopPlayout();
@@ -268,6 +292,23 @@ public:
                 if (n && self->suppressor_ && self->suppressor_->isEnabled()) {
                     self->suppressor_->process((float*)buffer, (float*)buffer, n);
                 }
+                if (n && self->avp_) {
+                    int16_t* p = new int16_t[n];
+                    float* fs = (float*)buffer;
+                    for (int i = 0; i < n; i++) {
+                        p[i] = fs[i] * 32768.0f;
+                    }
+                    for (int i = 0; i + self->avp_samples_ <= n; i += self->avp_samples_) {
+                        int r = avp_afe_howling_process(self->avp_, p + i, p + i, self->avp_samples_);
+                        if (r != AVP_OK) {
+                            printf("avp_afe_howling_process failed with error code %d\n", r);
+                        }
+                    }
+                    for (int i = 0; i < n; i++) {
+                        fs[i] = p[i] / 32768.0f;
+                    }
+                    delete[] p;
+                }
                 SDL_PutAudioStreamData(stream, buffer, additional_amount);
                 delete[] buffer;
             }
@@ -281,7 +322,8 @@ public:
         SDL_GetAudioDeviceFormat(id, &ispec, &frameSize);
         if (frameSize > 4) {
             printf("frameSize=%d\n", frameSize);
-            fs_.reset(new FeedbackSuppression(ospec.freq, frameSize));
+            // fs_.reset(new FeedbackSuppression(ospec.freq, frameSize));
+            initAvp(ospec.freq, ospec.channels);
             /*
             suppressor_.reset(new FeedbackSuppressor(ospec.freq, 8, frameSize, frameSize / 4));
             suppressor_->setSuppressionAmount(0.7f);
@@ -602,6 +644,18 @@ int main(int, char**)
                     if (ImGui::Checkbox("Enable FS", &enabled)) {
                         fs->setEnabled(enabled);
                     }
+                }
+                if (device.avp_) {
+                    int v;
+                    avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_GET_ENABLE, &v);
+                    bool enabled = v != 0;
+                    if (ImGui::Checkbox("Enable Howling", &enabled)) {
+                        v = enabled ? 1 : 0;
+                        printf("Enable Howling: %d\n", v);
+                        avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_SET_ENABLE, &v);
+                    }
+                    avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_GET_ACTIVE_NOTCHES, &v);
+                    ImGui::Text("Notches: %d", v);
                 }
                 if (ImGui::Button("howling test")) {
                     test_howling();

@@ -9,7 +9,7 @@
 
 EXE = example_sdl3_opengl3
 IMGUI_DIR = ../..
-SOURCES = main.cpp howling.h howling.cpp feedback_suppression.cpp feedback_suppression.h
+SOURCES = main.cpp howling.h howling.cpp feedback_suppression.cpp feedback_suppression.h avp_afe_howling.c avp_afe_howling.h
 SOURCES += $(IMGUI_DIR)/imgui.cpp $(IMGUI_DIR)/imgui_demo.cpp $(IMGUI_DIR)/imgui_draw.cpp $(IMGUI_DIR)/imgui_tables.cpp $(IMGUI_DIR)/imgui_widgets.cpp
 SOURCES += $(IMGUI_DIR)/backends/imgui_impl_sdl3.cpp $(IMGUI_DIR)/backends/imgui_impl_opengl3.cpp
 OBJS = $(addsuffix .o, $(basename $(notdir $(SOURCES))))
@@ -40,7 +40,7 @@ ifeq ($(UNAME_S), Linux) #LINUX
 	LIBS += $(LINUX_GL_LIBS) -ldl `pkg-config sdl3 --libs`
 
 	CXXFLAGS += `pkg-config sdl3 --cflags`
-	CFLAGS = $(CXXFLAGS)
+	CFLAGS = $(filter-out -std=c++11,$(CXXFLAGS))
 endif
 
 ifeq ($(UNAME_S), Darwin) #APPLE
@@ -51,7 +51,7 @@ ifeq ($(UNAME_S), Darwin) #APPLE
 
 	CXXFLAGS += `pkg-config --cflags sdl3`
 	CXXFLAGS += -I/usr/local/include -I/opt/local/include
-	CFLAGS = $(CXXFLAGS)
+	CFLAGS = $(filter-out -std=c++11,$(CXXFLAGS))
 endif
 
 ifeq ($(OS), Windows_NT)
@@ -59,7 +59,7 @@ ifeq ($(OS), Windows_NT)
 	LIBS += -lgdi32 -lopengl32 -limm32 `pkg-config --static --libs sdl3`
 
 	CXXFLAGS += `pkg-config --cflags sdl3`
-	CFLAGS = $(CXXFLAGS)
+	CFLAGS = $(filter-out -std=c++11,$(CXXFLAGS))
 endif
 
 ##---------------------------------------------------------------------
