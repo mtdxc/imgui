@@ -218,7 +218,14 @@ public:
         config.pnpr_th = 6.0f;
         config.notch_q = 12.0f;
         config.max_notches = AVP_AFE_HOWLING_MAX_NOTCHES;
-        avp_afe_howling_open(&config, &avp_);
+        config.enable = 1;
+        avp_status_t status = avp_afe_howling_open(&config, &avp_);
+        if (status != AVP_OK) {
+            printf("avp_afe_howling_open failed with error code %d\n", status);
+            avp_ = nullptr;
+            avp_samples_ = 0;
+            return false;
+        }
         avp_samples_ = avp_afe_howling_get_frame_samples(avp_) * channel;
         printf("avp_afe_howling_open: %p %d\n", (void*)avp_, avp_samples_);
         return avp_ != nullptr;
@@ -314,18 +321,17 @@ public:
             }
         }, this));
         if (!spk_stream_) return false;
-        SDL_AudioSpec ispec, ospec;
+        SDL_AudioSpec ispec, ospec, spec;
         SDL_GetAudioStreamFormat(spk_stream_.get(), &ispec, &ospec);
         printSpec(ispec, "playout in  spec");
         printSpec(ospec, "playout out spec");
         int frameSize = 1024;
-        SDL_GetAudioDeviceFormat(id, &ispec, &frameSize);
+        SDL_GetAudioDeviceFormat(id, &spec, &frameSize);
         if (frameSize > 4) {
-            printf("frameSize=%d\n", frameSize);
-            // fs_.reset(new FeedbackSuppression(ospec.freq, frameSize));
-            initAvp(ospec.freq, ospec.channels);
+            // fs_.reset(new FeedbackSuppression(ispec.freq, frameSize));
+            initAvp(ispec.freq, ispec.channels);
             /*
-            suppressor_.reset(new FeedbackSuppressor(ospec.freq, 8, frameSize, frameSize / 4));
+            suppressor_.reset(new FeedbackSuppressor(ispec.freq, 8, frameSize, frameSize / 4));
             suppressor_->setSuppressionAmount(0.7f);
             suppressor_->setQFactor(12.0f);
             suppressor_->setPeakThresholdDB(-35.0f);
@@ -655,7 +661,31 @@ int main(int, char**)
                         avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_SET_ENABLE, &v);
                     }
                     avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_GET_ACTIVE_NOTCHES, &v);
-                    ImGui::Text("Notches: %d", v);
+                    ImGui::SameLine();  ImGui::Text(": %d", v);
+                    avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_GET_MAX_NOTCHES, &v);
+                    if (ImGui::SliderInt("max_notches", &v, 1, AVP_AFE_HOWLING_MAX_NOTCHES)) {
+                        avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_SET_MAX_NOTCHES, &v);
+                    }
+                    float fv;
+                    avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_GET_PAPR_TH, &fv);
+                    if (ImGui::SliderFloat("papr_th", &fv, -10, 20)) {
+                        avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_SET_PAPR_TH, &fv);
+                    }
+
+                    avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_GET_PHPR_TH, &fv);
+                    if (ImGui::SliderFloat("phpr_th", &fv, 0, 100)) {
+                        avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_SET_PHPR_TH, &fv);
+                    }
+
+                    avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_GET_PNPR_TH, &fv);
+                    if (ImGui::SliderFloat("pnpr_th", &fv, 0, 100)) {
+                        avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_SET_PNPR_TH, &fv);
+                    }
+
+                    avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_GET_NOTCH_Q, &fv);
+                    if (ImGui::SliderFloat("notch_q", &fv, 2, 30)) {
+                        avp_afe_howling_control(device.avp_, AVP_AFE_HOWLING_CMD_SET_NOTCH_Q, &fv);
+                    }
                 }
                 if (ImGui::Button("howling test")) {
                     test_howling();
