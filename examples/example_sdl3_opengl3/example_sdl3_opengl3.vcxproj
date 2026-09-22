@@ -181,6 +181,7 @@
     <ClInclude Include="avp_afe_howling.h" />
     <ClInclude Include="feedback_suppression.h" />
     <ClInclude Include="howling.h" />
+    <ClInclude Include="jaec.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\misc\debuggers\imgui.natstepfilter" />

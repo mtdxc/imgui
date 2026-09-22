@@ -25,10 +25,20 @@
 #include "howling.h"
 #include "feedback_suppression.h"
 #include "avp_afe_howling.h"
+#include "jaec.h"
 #include <mutex>
 #include <memory>
 #include <iostream>
 #include <string>
+#include <vector>
+#include <cstdlib>
+#include <algorithm>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #ifdef __EMSCRIPTEN__
 #include "../libs/emscripten/emscripten_mainloop_stub.h"
@@ -123,6 +133,93 @@ public:
     int GetHeight() const { return height; }
 };
 
+class JaecFrontend {
+    typedef JAEC_FRONTEND* (*CreateFn)(const char*);
+    typedef void (*DestroyFn)(JAEC_FRONTEND*);
+    typedef const char* (*LastErrorFn)(JAEC_FRONTEND*);
+    typedef int (*ResetFn)(JAEC_FRONTEND*);
+    typedef int (*ProcessFn)(JAEC_FRONTEND*, const int16_t*, const int16_t*, int, int16_t*);
+
+#ifdef _WIN32
+    HMODULE library_ = nullptr;
+#else
+    void* library_ = nullptr;
+#endif
+    JAEC_FRONTEND* frontend_ = nullptr;
+    DestroyFn destroy_ = nullptr;
+    LastErrorFn last_error_ = nullptr;
+    ResetFn reset_ = nullptr;
+    ProcessFn process_ = nullptr;
+
+public:
+    ~JaecFrontend() { close(); }
+
+    bool open(const char* model_path) {
+        close();
+#ifdef _WIN32
+        library_ = LoadLibraryA("jaec_x86.dll");
+#else
+#if defined(__aarch64__) || defined(__arm__)
+        library_ = dlopen("./jaec_arm.so", RTLD_NOW);
+#else
+        library_ = dlopen("./jaec_x86.so", RTLD_NOW);
+#endif
+#endif
+        if (!library_) { 
+            printf("Failed to load library\n");
+            return false; 
+        }
+
+#ifdef _WIN32
+#define JAEC_SYMBOL(name) GetProcAddress(library_, name)
+#else
+#define JAEC_SYMBOL(name) dlsym(library_, name)
+#endif
+        CreateFn create = reinterpret_cast<CreateFn>(JAEC_SYMBOL("jaec_frontend_create"));
+        destroy_ = reinterpret_cast<DestroyFn>(JAEC_SYMBOL("jaec_frontend_destroy"));
+        last_error_ = reinterpret_cast<LastErrorFn>(JAEC_SYMBOL("jaec_frontend_last_error"));
+        reset_ = reinterpret_cast<ResetFn>(JAEC_SYMBOL("jaec_frontend_reset"));
+        process_ = reinterpret_cast<ProcessFn>(JAEC_SYMBOL("jaec_frontend_process"));
+#undef JAEC_SYMBOL
+        if (!create || !destroy_ || !process_) {
+            printf("Failed to load symbols\n");
+            close();
+            return false;
+        }
+        frontend_ = create(model_path);
+        if (!frontend_) {
+            printf("Failed to create frontend\n");
+            close();
+            return false;
+        }
+        return true;
+    }
+
+    void close() {
+        if (frontend_ && destroy_) destroy_(frontend_);
+        frontend_ = nullptr;
+        destroy_ = nullptr;
+        last_error_ = nullptr;
+        reset_ = nullptr;
+        process_ = nullptr;
+#ifdef _WIN32
+        if (library_) FreeLibrary(library_);
+#else
+        if (library_) dlclose(library_);
+#endif
+        library_ = nullptr;
+    }
+
+    bool valid() const { return frontend_ && process_; }
+    const char* lastError() const {
+        return frontend_ && last_error_ ? last_error_(frontend_) : nullptr;
+    }
+    bool reset() { return !reset_ || reset_(frontend_) == 0; }
+    int process(const int16_t* nearend, const int16_t* farend, int16_t* output, int frame_len) {
+        return process_(frontend_, nearend, farend, frame_len, output);
+    }
+};
+
 struct CameraClose {
     void operator()(SDL_Camera* t) const {
         SDL_CloseCamera(t);
@@ -197,11 +294,59 @@ public:
 };
 
 class SDLDevice {
+    bool jaec_enabled_ = true;
+    int jaec_frame_len_ = 160;
     std::unique_ptr<SDL_AudioStream, AudioStreamClose> mic_stream_, spk_stream_;
     std::unique_ptr<SDL_Camera, CameraClose> camera_;
     PcmBuffer<float> pcm;
+    PcmBuffer<float> farend_pcm_;
+    PcmBuffer<float> jaec_output_;
+    std::vector<int16_t> jaec_near_pending_;
+    std::vector<int16_t> jaec_farend_pending_;
+    std::vector<int16_t> jaec_frame_output_;
+    std::unique_ptr<JaecFrontend> jaec_;
     std::unique_ptr<FeedbackSuppressor> suppressor_;
     std::unique_ptr<FeedbackSuppression> fs_;
+
+    static int16_t floatToPcm16(float sample) {
+        sample = std::max(-1.0f, std::min(1.0f, sample));
+        return static_cast<int16_t>(sample * 32767.0f);
+    }
+
+    void processCaptured(float* samples, int count) {
+        if (!jaec_ || !jaec_->valid() || !jaec_enabled_) {
+            pcm.Write(samples, count);
+            return;
+        }
+
+        std::vector<float> farend(count);
+        farend_pcm_.Read(farend.data(), count);
+        for (int i = 0; i < count; ++i) {
+            jaec_near_pending_.push_back(floatToPcm16(samples[i]));
+            jaec_farend_pending_.push_back(floatToPcm16(farend[i]));
+        }
+
+        while (jaec_near_pending_.size() >= static_cast<size_t>(jaec_frame_len_)) {
+            jaec_frame_output_.resize(jaec_frame_len_);
+            int result = jaec_->process(jaec_near_pending_.data(), jaec_farend_pending_.data(),
+                jaec_frame_output_.data(), jaec_frame_len_);
+            if (result != 0) {
+                const char* error = jaec_->lastError();
+                printf("jaec_frontend_process failed: %d%s%s\n", result,
+                    error ? ": " : "", error ? error : "");
+                jaec_->reset();
+                jaec_frame_output_.assign(jaec_frame_len_, 0);
+            }
+            for (int16_t sample : jaec_frame_output_) {
+                float value = sample / 32768.0f;
+                jaec_output_.Write(&value, 1);
+            }
+            jaec_near_pending_.erase(jaec_near_pending_.begin(), jaec_near_pending_.begin() + jaec_frame_len_);
+            jaec_farend_pending_.erase(jaec_farend_pending_.begin(), jaec_farend_pending_.begin() + jaec_frame_len_);
+        }
+        jaec_output_.Read(samples, count);
+        pcm.Write(samples, count);
+    }
 public:
     avp_afe_howling_t* avp_ = nullptr;
     uint32_t avp_samples_ = 0;
@@ -230,7 +375,7 @@ public:
         printf("avp_afe_howling_open: %p %d\n", (void*)avp_, avp_samples_);
         return avp_ != nullptr;
     }
-    SDLDevice() : pcm(8192) {
+    SDLDevice() : pcm(8192), farend_pcm_(8192), jaec_output_(8192) {
         SDL_Init(SDL_INIT_CAMERA | SDL_INIT_AUDIO);
     }
     virtual ~SDLDevice() {
@@ -257,18 +402,29 @@ public:
     }
 
     bool StartRecord(SDL_AudioDeviceID id, const SDL_AudioSpec& aspec) {
+        const char* model_path = std::getenv("JAEC_MODEL_PATH");
+        if (!model_path || !*model_path) model_path = "tde_lp.bin";
+        printf("JAEC frame length: %d samples\n", jaec_frame_len_);
+        jaec_.reset(new JaecFrontend());
+        if (!model_path || !jaec_->open(model_path)) {
+            printf("JAEC disabled: cannot load model %s\n", model_path);
+            jaec_.reset();
+        }
+        jaec_near_pending_.clear();
+        jaec_farend_pending_.clear();
+        jaec_output_.clear();
         mic_stream_.reset(SDL_OpenAudioDeviceStream(id, &aspec, [](void* userdata, SDL_AudioStream* stream, int additional_amount, int total_amount) {
             // printf("Microphone stream callback: %d, %d\n", additional_amount, total_amount);
-            auto pcm = (PcmBuffer<float>*)userdata;
+            auto self = (SDLDevice*)userdata;
             if (additional_amount > 0) {
-                char* buffer = new char[additional_amount];
+                float* buffer = new float[additional_amount / sizeof(float)];
                 int got = SDL_GetAudioStreamData(stream, buffer, additional_amount);
                 if (got > 0) {
-                    pcm->Write((float*)buffer, got / 4);
+                    self->processCaptured(buffer, got / sizeof(float));
                 }
                 delete[] buffer;
             }
-         }, &pcm));
+         }, this));
         if (!mic_stream_) return false;
         SDL_AudioSpec ispec, ospec;
         SDL_GetAudioStreamFormat(mic_stream_.get(), &ispec, &ospec);
@@ -283,6 +439,11 @@ public:
     void StopRecord() {
         mic_stream_ = nullptr;
         pcm.clear();
+        farend_pcm_.clear();
+        jaec_output_.clear();
+        jaec_near_pending_.clear();
+        jaec_farend_pending_.clear();
+        jaec_.reset();
     }
     bool StartPlayout(SDL_AudioDeviceID id, const SDL_AudioSpec& aspec) {
         printSpec(aspec, "playout spec");
@@ -316,6 +477,7 @@ public:
                     }
                     delete[] p;
                 }
+                if (n) self->farend_pcm_.Write((float*)buffer, n);
                 SDL_PutAudioStreamData(stream, buffer, additional_amount);
                 delete[] buffer;
             }
@@ -359,6 +521,19 @@ public:
     }
     FeedbackSuppression* fs() {
         return fs_.get();
+    }
+    bool hasJaec() const {
+        return jaec_ && jaec_->valid();
+    }
+    bool jaec_enabled() const {
+        return jaec_enabled_;
+    }
+    bool set_jaec_enabled(bool enabled) {
+        jaec_enabled_ = enabled;
+        if (jaec_) {
+            jaec_->reset();
+        }
+        return jaec_enabled_;
     }
     // SDL_Camera* camera() { return camera_.get(); }
     std::shared_ptr<SDL_Surface> captureFrame(uint64_t* tsp) {
@@ -516,7 +691,7 @@ int main(int, char**)
     SDL_AudioSpec aspec;
     aspec.format = SDL_AUDIO_F32;
     aspec.channels = 1;
-    aspec.freq = 44100;
+    aspec.freq = 16000;
 
     // Main loop
     bool done = false;
@@ -631,6 +806,12 @@ int main(int, char**)
                     else{
                         device.StartPlayout(spk_ids[spk_idx], aspec);
                         device.StartRecord(mic_ids[mic_idx], aspec);
+                    }
+                }
+                if (device.hasJaec()) {
+                    bool jaec_enabled = device.jaec_enabled();
+                    if (ImGui::Checkbox("Enable JAEC", &jaec_enabled)) {
+                        device.set_jaec_enabled(jaec_enabled);
                     }
                 }
                 if (auto fs = device.fs()) {

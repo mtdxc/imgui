@@ -9,6 +9,7 @@
 mkdir %OUT_DIR%
 cl /nologo /Zi /MD /utf-8 %INCLUDES% %SOURCES% /Fe%OUT_DIR%/%OUT_EXE%.exe /Fo%OUT_DIR%/ /link %LIBS% /subsystem:console
 copy %SDL3_DIR%\lib\x86\SDL3.dll %OUT_DIR%\
+copy jaec_x86.dll %OUT_DIR%\
 
 @set OUT_DIR=Release
 @REM mkdir %OUT_DIR%
