@@ -312,10 +312,33 @@ class SDLDevice {
         sample = std::max(-1.0f, std::min(1.0f, sample));
         return static_cast<int16_t>(sample * 32767.0f);
     }
-
-    void processCaptured(float* samples, int count) {
+    void processHowling(float* buffer, int n) {
+        if (fs_ && fs_->enabled()) {
+            return fs_->processBlock((float*)buffer, (float*)buffer, n);
+        }
+        if (suppressor_ && suppressor_->isEnabled()) {
+            return suppressor_->process((float*)buffer, (float*)buffer, n);
+        }
+        if (avp_) {
+            int16_t* p = new int16_t[n];
+            float* fs = (float*)buffer;
+            for (int i = 0; i < n; i++) {
+                p[i] = fs[i] * 32768.0f;
+            }
+            for (int i = 0; i + avp_samples_ <= n; i += avp_samples_) {
+                int r = avp_afe_howling_process(avp_, p + i, p + i, avp_samples_);
+                if (r != AVP_OK) {
+                    printf("avp_afe_howling_process failed with error code %d\n", r);
+                }
+            }
+            for (int i = 0; i < n; i++) {
+                fs[i] = p[i] / 32768.0f;
+            }
+            delete[] p;
+        }
+    }
+    void processAec(float* samples, int count) {
         if (!jaec_ || !jaec_->valid() || !jaec_enabled_) {
-            pcm.Write(samples, count);
             return;
         }
 
@@ -345,7 +368,6 @@ class SDLDevice {
             jaec_farend_pending_.erase(jaec_farend_pending_.begin(), jaec_farend_pending_.begin() + jaec_frame_len_);
         }
         jaec_output_.Read(samples, count);
-        pcm.Write(samples, count);
     }
 public:
     avp_afe_howling_t* avp_ = nullptr;
@@ -420,7 +442,10 @@ public:
                 float* buffer = new float[additional_amount / sizeof(float)];
                 int got = SDL_GetAudioStreamData(stream, buffer, additional_amount);
                 if (got > 0) {
-                    self->processCaptured(buffer, got / sizeof(float));
+                    int samples = got / sizeof(float);
+                    self->processHowling(buffer, samples);
+                    self->processAec(buffer, samples);
+                    self->pcm.Write(buffer, samples);
                 }
                 delete[] buffer;
             }
@@ -454,29 +479,6 @@ public:
                 /* feed the new data to the stream. It will queue at the end, and trickle out as the hardware needs more data. */
                 char* buffer = new char[additional_amount];
                 int n = self->pcm.Read((float*)buffer, additional_amount / 4);
-                if (n && self->fs_ && self->fs_->enabled()) {
-                    self->fs_->processBlock((float*)buffer, (float*)buffer, n);
-                }
-                if (n && self->suppressor_ && self->suppressor_->isEnabled()) {
-                    self->suppressor_->process((float*)buffer, (float*)buffer, n);
-                }
-                if (n && self->avp_) {
-                    int16_t* p = new int16_t[n];
-                    float* fs = (float*)buffer;
-                    for (int i = 0; i < n; i++) {
-                        p[i] = fs[i] * 32768.0f;
-                    }
-                    for (int i = 0; i + self->avp_samples_ <= n; i += self->avp_samples_) {
-                        int r = avp_afe_howling_process(self->avp_, p + i, p + i, self->avp_samples_);
-                        if (r != AVP_OK) {
-                            printf("avp_afe_howling_process failed with error code %d\n", r);
-                        }
-                    }
-                    for (int i = 0; i < n; i++) {
-                        fs[i] = p[i] / 32768.0f;
-                    }
-                    delete[] p;
-                }
                 if (n) self->farend_pcm_.Write((float*)buffer, n);
                 SDL_PutAudioStreamData(stream, buffer, additional_amount);
                 delete[] buffer;
