@@ -1,6 +1,18 @@
 
 # How to Build
 
+## CMake
+
+From this directory, configure and build with:
+```
+cmake -S . -B build
+cmake --build build --config Release
+```
+
+On Windows with MSVC, CMake uses `../libs/sdl3` by default; set the `SDL3_DIR`
+environment variable to use a different SDL3 SDK. Build the LocalVQE Release
+library first. Other toolchains need SDL3 available through `pkg-config`.
+
 ## Windows with Visual Studio's IDE
 
 Use the provided project file (.vcxproj). Add to solution (imgui_examples.sln) if necessary.

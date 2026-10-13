@@ -22,10 +22,15 @@ add_executable(sdl3_audio_test
     "${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp"
 )
 
+set(LOCALVQE_BUILD_SHARED ON)
+add_subdirectory("LocalVQE/ggml")
+add_dependencies(sdl3_audio_test localvqe_shared)
+target_link_libraries(sdl3_audio_test PRIVATE localvqe_shared)
 target_include_directories(sdl3_audio_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${IMGUI_DIR}"
     "${IMGUI_DIR}/backends"
+    "LocalVQE/ggml"
 )
 
 if(WIN32 AND MSVC)

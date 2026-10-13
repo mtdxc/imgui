@@ -24,6 +24,7 @@
 
 #include "howling.h"
 #include "feedback_suppression.h"
+#include "localvqe_api.h"
 #include "avp_afe_howling.h"
 #include "jaec.h"
 #include <mutex>
@@ -294,8 +295,9 @@ public:
 };
 
 class SDLDevice {
+    localvqe_ctx_t vqe_ = 0;
+
     bool jaec_enabled_ = true;
-    int jaec_frame_len_ = 160;
     std::unique_ptr<SDL_AudioStream, AudioStreamClose> mic_stream_, spk_stream_;
     std::unique_ptr<SDL_Camera, CameraClose> camera_;
     PcmBuffer<float> pcm;
@@ -338,9 +340,10 @@ class SDLDevice {
         }
     }
     void processAec(float* samples, int count) {
-        if (!jaec_ || !jaec_->valid() || !jaec_enabled_) {
+        if (!jaec_ || !jaec_->valid() || !jaec_enabled_ || !vqe_) {
             return;
         }
+        int frame_len = jaec_enabled_ ? 160 : localvqe_hop_length(vqe_);
 
         std::vector<float> farend(count);
         farend_pcm_.Read(farend.data(), count);
@@ -349,23 +352,32 @@ class SDLDevice {
             jaec_farend_pending_.push_back(floatToPcm16(farend[i]));
         }
 
-        while (jaec_near_pending_.size() >= static_cast<size_t>(jaec_frame_len_)) {
-            jaec_frame_output_.resize(jaec_frame_len_);
-            int result = jaec_->process(jaec_near_pending_.data(), jaec_farend_pending_.data(),
-                jaec_frame_output_.data(), jaec_frame_len_);
-            if (result != 0) {
-                const char* error = jaec_->lastError();
-                printf("jaec_frontend_process failed: %d%s%s\n", result,
-                    error ? ": " : "", error ? error : "");
-                jaec_->reset();
-                jaec_frame_output_.assign(jaec_frame_len_, 0);
+        while (jaec_near_pending_.size() >= static_cast<size_t>(frame_len)) {
+            jaec_frame_output_.resize(frame_len);
+            if (jaec_enabled_) {
+                int result = jaec_->process(jaec_near_pending_.data(), jaec_farend_pending_.data(),
+                    jaec_frame_output_.data(), frame_len);
+                if (result != 0) {
+                    const char* error = jaec_->lastError();
+                    printf("jaec_frontend_process failed: %d%s%s\n", result,
+                        error ? ": " : "", error ? error : "");
+                    jaec_->reset();
+                    jaec_frame_output_.assign(frame_len, 0);
+                }
+            }
+            else if (vqe_) {
+                int result = localvqe_process_s16(vqe_, jaec_near_pending_.data(), jaec_farend_pending_.data(), frame_len, jaec_frame_output_.data());
+                if (result) {
+                    printf("localvqe_process_s16 %d error %d", frame_len, result);
+                    jaec_frame_output_.assign(frame_len, 0);
+                }
             }
             for (int16_t sample : jaec_frame_output_) {
                 float value = sample / 32768.0f;
                 jaec_output_.Write(&value, 1);
             }
-            jaec_near_pending_.erase(jaec_near_pending_.begin(), jaec_near_pending_.begin() + jaec_frame_len_);
-            jaec_farend_pending_.erase(jaec_farend_pending_.begin(), jaec_farend_pending_.begin() + jaec_frame_len_);
+            jaec_near_pending_.erase(jaec_near_pending_.begin(), jaec_near_pending_.begin() + frame_len);
+            jaec_farend_pending_.erase(jaec_farend_pending_.begin(), jaec_farend_pending_.begin() + frame_len);
         }
         jaec_output_.Read(samples, count);
     }
@@ -426,11 +438,15 @@ public:
     bool StartRecord(SDL_AudioDeviceID id, const SDL_AudioSpec& aspec) {
         const char* model_path = std::getenv("JAEC_MODEL_PATH");
         if (!model_path || !*model_path) model_path = "tde_lp.bin";
-        printf("JAEC frame length: %d samples\n", jaec_frame_len_);
         jaec_.reset(new JaecFrontend());
         if (!model_path || !jaec_->open(model_path)) {
             printf("JAEC disabled: cannot load model %s\n", model_path);
             jaec_.reset();
+        }
+        model_path = "localvqe-v1.3-4.8M-f32.gguf";// "localvqe-v1.3-F32.gguf";
+        vqe_ = localvqe_new(model_path);
+        if (!vqe_) {
+            printf("localvqe_new %s error\n", model_path);
         }
         jaec_near_pending_.clear();
         jaec_farend_pending_.clear();
@@ -464,6 +480,10 @@ public:
     void StopRecord() {
         mic_stream_ = nullptr;
         pcm.clear();
+        if (vqe_) {
+            localvqe_free(vqe_);
+            vqe_ = 0;
+        }
         farend_pcm_.clear();
         jaec_output_.clear();
         jaec_near_pending_.clear();

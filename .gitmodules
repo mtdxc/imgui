@@ -1,0 +1,3 @@
+[submodule "examples/example_sdl3_opengl3/LocalVQE"]
+	path = examples/example_sdl3_opengl3/LocalVQE
+	url = https://github.com/localai-org/LocalVQE.git
